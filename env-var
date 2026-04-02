@@ -1,0 +1,27 @@
+# GitHub Configuration
+GITHUB_TOKEN=ghp_your_personal_access_token_here
+
+# Proxy Configuration
+# Option 1: Simple proxy without authentication
+HTTP_PROXY=http://proxy.company.com:8080
+HTTPS_PROXY=http://proxy.company.com:8080
+http_proxy=http://proxy.company.com:8080
+https_proxy=http://proxy.company.com:8080
+
+# Option 2: Proxy with authentication
+HTTP_PROXY=http://proxy.company.com:8080
+HTTPS_PROXY=http://proxy.company.com:8080
+PROXY_USER=your_username
+PROXY_PASS=your_password
+
+# Option 3: Proxy with credentials in URL (not recommended for security)
+# HTTP_PROXY=http://username:password@proxy.company.com:8080
+
+# Option 4: For NTLM authentication (Windows domain)
+# PROXY_USER=DOMAIN\\username
+# PROXY_PASS=your_password
+# HTTP_PROXY=http://proxy.company.com:8080
+
+# Optional: Bypass proxy for internal domains
+NO_PROXY=localhost,127.0.0.1,*.internal.com
+no_proxy=localhost,127.0.0.1,*.internal.com
