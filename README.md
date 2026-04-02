@@ -7,7 +7,7 @@ Script
 `pip list | grep -E "PyGithub|pynacl|requests|python-dotenv"`
 
 
-`cat > .env << EOF
+```cat > .env << EOF
 # GitHub Personal Access Token
 # Generate at: https://github.com/settings/tokens
 # Required scopes: repo, public_repo, admin:org
@@ -15,7 +15,7 @@ GITHUB_TOKEN=ghp_your_personal_access_token_here
 EOF
 
 # Secure the .env file
-chmod 600 .env`
+chmod 600 .env```
 
 
 `cat > secrets.txt << EOF
