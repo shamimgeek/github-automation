@@ -1,0 +1,69 @@
+h2. Speech-to-Text Model Comparison Report
+
+This report compares four major deployment architectures for high-performance Automatic Speech Recognition (ASR).
+
+h3. Executive Summary: Architectural Overview
+
+|| Feature || GDC (Chirp Offline) || VPC-SC (Chirp Private) || Self-Hosted (Whisper) || NVIDIA Riva ||
+| Primary Driver | Absolute Data Sovereignty | Cloud Security/Compliance | Flexibility/Open-Source | Real-time/Extreme Perf |
+| Deployment | Air-gapped Hardware | Google Cloud (Private) | On-prem / Cloud VM | On-prem / Cloud GPU |
+| Network | Zero Internet Access | Private VPC (No Public IP) | Local or Private | Local or Private |
+| Maintenance | High (Hardware + SW) | Low (Managed Service) | Medium (DevOps heavy) | Medium (GPU optimized) |
+| Model | Google Chirp | Google Chirp | OpenAI Whisper | NeMo/Parakeet/Riva |
+
+h3. 1. Google Distributed Cloud (Chirp Offline)
+Best for: Government, Defense, or highly regulated sectors requiring physical isolation.
+
+Infrastructure: Requires GDC "Air-gapped" hardware (delivered as physical racks).
+
+Networking: Operates in a completely disconnected environment. There is no "call-home" to Google APIs.
+
+Performance: Uses the Chirp 2/3 model. Highly resilient to background noise and supports 100+ languages.
+
+DevOps Impact: High overhead. Requires managing physical lifecycles and manual software updates via portable storage.
+
+h3. 2. VPC Service Controls (Chirp Private)
+Best for: Enterprise applications where data must stay within a security perimeter.
+
+Infrastructure: Standard Google Cloud infrastructure wrapped in a VPC-SC perimeter.
+
+Networking: Uses Private Google Access to ensure data never traverses the public internet. Communication stays within your private IP space.
+
+Performance: Same high-tier accuracy as public Google STT API but with strict data egress controls.
+
+DevOps Impact: Minimal. Focuses on IAM roles, Service Perimeters, and VPC peering.
+
+h3. 3. Self-Hosted OpenAI Whisper
+Best for: Development flexibility, cost-saving at high volumes, and custom pipelines.
+
+Infrastructure: Requires NVIDIA GPUs (e.g., A100/H100). Can be run on GKE or bare metal.
+
+Networking: Fully controlled by the internal team. Usually deployed inside a Kubernetes cluster with local load balancers.
+
+Performance: Excellent accuracy (Large-v3). Note: It is an "offline" model; real-time streaming requires additional engineering (like Faster-Whisper).
+
+DevOps Impact: Moderate. Requires managing CUDA drivers, VRAM allocation, and autoscaling based on GPU metrics.
+
+h3. 4. NVIDIA Riva
+Best for: Real-time applications (low latency) and massive throughput.
+
+Infrastructure: Highly optimized for NVIDIA hardware. Deployed via NGC (NVIDIA GPU Cloud) containers.
+
+Networking: Typically deployed on-prem or in a private cloud environment using Kubernetes/Helm.
+
+Performance: Faster than Whisper for real-time streaming. Includes built-in tools for Speaker Diarization and Punctuation.
+
+DevOps Impact: Moderate. Structured deployment via Helm charts, but requires specialized knowledge of the Riva/Triton server architecture.
+
+h3. Technical Comparison Matrix
+
+|| Metric || GDC Offline || VPC-SC || Whisper || NVIDIA Riva ||
+| Latency | Low (Local) | Variable (Network) | Medium (Processing) | Lowest (Optimized) |
+| Privacy | Highest | High | High (Self-managed) | High (Self-managed) |
+| Scalability | Fixed (Hardware) | Elastic | Manual (K8s) | Manual (K8s) |
+| Multi-Language | 100+ | 125+ | 99 | Custom/Broad |
+
+{quote}
+Recommendation:
+If the priority is minimizing overhead while maintaining high security, VPC-SC with Chirp is the ideal choice. If the project requires deep customization and cost-control at scale, Self-hosted Whisper on GKE is the preferred engineering path.
+{quote}
