@@ -1,8 +1,15 @@
 - name: Generate Step Summary
   run: |
+    FILE_PATH="${{ matrix.image_name }}-veracode.zip"
+    
+    # Calculate size and digest dynamically
+    FILE_SIZE=$(du -h "$FILE_PATH" | cut -f1)
+    FILE_DIGEST="sha256:$(sha256sum "$FILE_PATH" | cut -d' ' -f1)"
+    
+    # Write the Markdown summary
     echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
     echo "Produced during runtime" >> $GITHUB_STEP_SUMMARY
     echo "" >> $GITHUB_STEP_SUMMARY
-    echo "| Name | Link |" >> $GITHUB_STEP_SUMMARY
-    echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-    echo "| 📦 ${{ matrix.image_name }}-veracode-scan | [Download Zip](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts) |" >> $GITHUB_STEP_SUMMARY
+    echo "| Name | Size | Digest |" >> $GITHUB_STEP_SUMMARY
+    echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+    echo "| 📦 ${{ matrix.image_name }}-veracode-scan | $FILE_SIZE | $FILE_DIGEST |" >> $GITHUB_STEP_SUMMARY
