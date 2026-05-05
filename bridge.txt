@@ -7,19 +7,12 @@
 
       - name: Generate Step Summary
         run: |
-          FILE_PATH="${{ matrix.image_name }}-veracode.zip"
+          # Grabbing the exact bytes to match your logs
+          FILE_SIZE_BYTES=$(stat -c%s "${{ matrix.image_name }}-veracode.zip")
           
-          # Get file size in bytes (works across different Linux/macOS environments)
-          if [[ "$OSTYPE" == "darwin"* ]]; then
-            FILE_SIZE_BYTES=$(stat -f%z "$FILE_PATH")
-          else
-            FILE_SIZE_BYTES=$(stat -c%s "$FILE_PATH")
-          fi
-          
-          # Write the Markdown summary
           echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "Produced during runtime" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Name | Size (Bytes) | Digest | Link |" >> $GITHUB_STEP_SUMMARY
+          echo "| Name | Size | Digest | Link |" >> $GITHUB_STEP_SUMMARY
           echo "| :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📦 ${{ matrix.image_name }}-veracode-scan | $FILE_SIZE_BYTES | ${{ steps.upload-veracode.outputs.artifact-digest }} | [Download Zip](${{ steps.upload-veracode.outputs.artifact-url }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📦 ${{ matrix.image_name }}-veracode-scan | $FILE_SIZE_BYTES Bytes | ${{ steps.upload-veracode.outputs.artifact-digest }} | [Download Zip](${{ steps.upload-veracode.outputs.artifact-url }}) |" >> $GITHUB_STEP_SUMMARY
