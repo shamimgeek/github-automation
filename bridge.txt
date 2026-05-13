@@ -1,18 +1,7 @@
-- name: Upload Artifact
-        id: upload-veracode
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.image_name }}-veracode-scan
-          path: ${{ matrix.image_name }}-veracode.zip
+I wanted to reach out to discuss a potential career development step. As you know, I’m currently working as an external team member, but I’m very interested in moving into an internal DB position within the team.
 
-      - name: Generate Step Summary
-        run: |
-          # Grabbing the exact bytes to match your logs
-          FILE_SIZE_BYTES=$(stat -c%s "${{ matrix.image_name }}-veracode.zip")
-          
-          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "Produced during runtime" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Name | Size | Digest | Link |" >> $GITHUB_STEP_SUMMARY
-          echo "| :--- | :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📦 ${{ matrix.image_name }}-veracode-scan | $FILE_SIZE_BYTES Bytes | ${{ steps.upload-veracode.outputs.artifact-digest }} | [Download Zip](${{ steps.upload-veracode.outputs.artifact-url }}) |" >> $GITHUB_STEP_SUMMARY
+I really enjoy working on [project/product name], and I believe transitioning to an internal role would allow me to contribute even more effectively — with deeper involvement in strategic decisions, better alignment with long-term goals, and stronger collaboration across the board.
+
+Would you be open to a short chat about whether this might be possible and what the next steps would look like?
+
+Thank you for your support and for everything you do for the team.
