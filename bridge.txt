@@ -1,2 +1,6 @@
-sdfd
+-c Release: Keeps your app highly optimized, fast, and secure for your Test, Staging, and Production environments.
+
+-p:UseAppHost=false: Keeps your Docker image clean and tailored for a dotnet MyStore.dll entrypoint.
+
+-p:DebugType=portable -p:DebugSymbols=true: Explicitly forces the compiler to generate the .pdb files that Veracode requires for its static analysis, even though it's a Release build.
 dotnet publish -c Release -o /publish -p:UseAppHost=false -p:DebugType=portable -p:DebugSymbols=true
