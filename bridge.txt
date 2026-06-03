@@ -1,1 +1,2 @@
 sdfd
+dotnet publish -c Release -o /publish -p:UseAppHost=false -p:DebugType=portable -p:DebugSymbols=true
