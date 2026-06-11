@@ -1,1 +1,68 @@
-dsfsdf
+# ==========================================
+# STAGE 1: Build & Package for Veracode / Compilation
+# ==========================================
+FROM artifactory.sdlc.ctl.gcp.db.com/dkr-public-local/com/db/db-curated-images/java-jdk:11-wolfi.202605100113 AS builder
+
+USER root
+
+# 1. Copy Application Source Code
+WORKDIR /code
+COPY ecsj .
+
+# 2. Install Centera SDK (Required for compilation dependencies)
+WORKDIR /code/lib/centera-sdk/install
+RUN echo /ecs-sdk > ./.sdk-install-input.txt && \
+    chmod a+x ./install && \
+    ./install < ./.sdk-install-input.txt
+
+# 3. Install Maven Configuration
+COPY docker/maven-settings.xml /code/lib/maven/conf/settings.xml
+ENV PATH="$PATH:/code/lib/maven/bin"
+
+# 4. Set up Centera Environment Variables for Compile-time
+ENV CENTERA_LIB_PATH=/ecs-sdk/lib/64
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CENTERA_LIB_PATH
+RUN cp -R /code/lib/libstdc++5/. /ecs-sdk/lib/64
+
+# 5. Inject Registry Certificates for Secure Component Resolution
+COPY util/registry-certificate-agent/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+
+# 6. Build the Application with Debug Symbols and Copy Dependencies
+WORKDIR /code
+RUN mvn clean package dependency:copy-dependencies -DskipTests
+
+# 7. OPTIONAL: Generate a clean ZIP package for Veracode Upload
+# This creates a zip containing only the main jar and dependency jars, 
+# completely omitting the native .so files that trigger "Unsupported Compiler" errors.
+RUN apk add --no-cache zip && \
+    mkdir -p /veracode-upload && \
+    cp target/ecsj-1.0-SNAPSHOT.jar /veracode-upload/ && \
+    cp -r target/dependency /veracode-upload/ && \
+    cd /veracode-upload && zip -r ecsj-veracode-scan.zip .
+
+# ==========================================
+# STAGE 2: Final Runtime Environment
+# ==========================================
+FROM artifactory.sdlc.ctl.gcp.db.com/dkr-public-local/com/db/db-curated-images/java-jdk:11-wolfi.202605100113 AS runner
+
+USER root
+WORKDIR /app
+
+# 1. Copy over the native Centera runtime environment from the builder
+COPY --from=builder /ecs-sdk /ecs-sdk
+
+# 2. Re-establish runtime environment paths
+ENV CENTERA_LIB_PATH=/ecs-sdk/lib/64
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CENTERA_LIB_PATH
+
+# 3. Copy ONLY the compiled artifacts from the builder (No source code, no pom.xml, no .m2 cache)
+COPY --from=builder /code/target/ecsj-1.0-SNAPSHOT.jar ./
+COPY --from=builder /code/target/dependency ./dependency
+COPY --from=builder /code/ecsjstart.sh ./
+
+RUN chmod +x ./ecsjstart.sh
+RUN mkdir blobs
+
+# The final runtime executes cleanly with zero build-tool bloat
+ENTRYPOINT ["./ecsjstart.sh"]
