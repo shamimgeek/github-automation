@@ -1,68 +1,92 @@
-# ==========================================
-# STAGE 1: Build & Package for Veracode / Compilation
-# ==========================================
-FROM artifactory.sdlc.ctl.gcp.db.com/dkr-public-local/com/db/db-curated-images/java-jdk:11-wolfi.202605100113 AS builder
+pip install selenium beautifulsoup4 pandas
 
-USER root
 
-# 1. Copy Application Source Code
-WORKDIR /code
-COPY ecsj .
+import re
+import time
+import pandas as pd
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-# 2. Install Centera SDK (Required for compilation dependencies)
-WORKDIR /code/lib/centera-sdk/install
-RUN echo /ecs-sdk > ./.sdk-install-input.txt && \
-    chmod a+x ./install && \
-    ./install < ./.sdk-install-input.txt
+# 1. Setup Your Configuration
+TARGET_URL = "https://your-internal-dashboard-url.com/path"  # Replace with your actual URL
 
-# 3. Install Maven Configuration
-COPY docker/maven-settings.xml /code/lib/maven/conf/settings.xml
-ENV PATH="$PATH:/code/lib/maven/bin"
+def scrape_dashboard_table(url):
+    # Initialize the WebDriver (Make sure Chrome/Chromedriver is installed)
+    options = webdriver.ChromeOptions()
+    # options.add_argument('--headless') # Uncomment to run background without opening browser window
+    
+    driver = webdriver.Chrome(options=options)
+    parsed_data = []
 
-# 4. Set up Centera Environment Variables for Compile-time
-ENV CENTERA_LIB_PATH=/ecs-sdk/lib/64
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CENTERA_LIB_PATH
-RUN cp -R /code/lib/libstdc++5/. /ecs-sdk/lib/64
+    try:
+        # Open the webpage
+        driver.get(url)
+        
+        # --- LOGIN / AUTH HANDLING (If needed) ---
+        # If your page requires login, uncomment and adjust these lines:
+        # WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "username"))).send_keys("your_username")
+        # driver.find_by_id("password").send_keys("your_password")
+        # driver.find_element(By.ID, "login-btn").click()
+        
+        print("Waiting for the dashboard data table to load...")
+        # Adjust the selector below to match an element or table class on your specific page
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'com/db/pr2')] | //table"))
+        )
+        
+        # Give JS components an extra moment to fully render all row content
+        time.sleep(3) 
 
-# 5. Inject Registry Certificates for Secure Component Resolution
-COPY util/registry-certificate-agent/ /usr/local/share/ca-certificates/
-RUN update-ca-certificates
+        # 2. Extract page source and parse with BeautifulSoup
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        # Find all table rows (adjust tag names like 'tr' or 'div' based on the site's structure)
+        rows = soup.find_all(['tr', 'div'], class_=re.compile(r'(row|table-row|grid-row)', re.I)) or soup.find_all('tr')
+        
+        print(f"Found {len(rows)} potential data rows. Parsing...")
 
-# 6. Build the Application with Debug Symbols and Copy Dependencies
-WORKDIR /code
-RUN mvn clean package dependency:copy-dependencies -DskipTests
+        for row in rows:
+            text_content = row.get_text(separator="||")
+            
+            # Check if this row belongs to your target path structure
+            if "com/db/pr2" in text_content:
+                # Regex to isolate: Path, Modified Date, and Lifecycle
+                match_path = re.search(r'com/db/pr2/([\w\-]+)/v?([\d\.]+)/manifest\.json', text_content)
+                match_date = re.search(r'(\d{2}-[A-Za-z]{3}-\d{4})', text_content)
+                match_lifecycle = re.search(r'(RELEASE_CANDIDATE|RELEASE|SNAPSHOT|DEVELOPMENT)', text_content)
+                
+                if match_path and match_date and match_lifecycle:
+                    binary_name = match_path.group(1)
+                    version = match_path.group(2)
+                    modified_date = match_date.group(1)
+                    lifecycle = match_lifecycle.group(1)
+                    
+                    parsed_data.append({
+                        "Binary Name": binary_name,
+                        "Version": version,
+                        "Artifact Modified Date": modified_date,
+                        "Binary Lifecycle": lifecycle
+                    })
 
-# 7. OPTIONAL: Generate a clean ZIP package for Veracode Upload
-# This creates a zip containing only the main jar and dependency jars, 
-# completely omitting the native .so files that trigger "Unsupported Compiler" errors.
-RUN apk add --no-cache zip && \
-    mkdir -p /veracode-upload && \
-    cp target/ecsj-1.0-SNAPSHOT.jar /veracode-upload/ && \
-    cp -r target/dependency /veracode-upload/ && \
-    cd /veracode-upload && zip -r ecsj-veracode-scan.zip .
+    finally:
+        driver.quit()
 
-# ==========================================
-# STAGE 2: Final Runtime Environment
-# ==========================================
-FROM artifactory.sdlc.ctl.gcp.db.com/dkr-public-local/com/db/db-curated-images/java-jdk:11-wolfi.202605100113 AS runner
+    return parsed_data
 
-USER root
-WORKDIR /app
-
-# 1. Copy over the native Centera runtime environment from the builder
-COPY --from=builder /ecs-sdk /ecs-sdk
-
-# 2. Re-establish runtime environment paths
-ENV CENTERA_LIB_PATH=/ecs-sdk/lib/64
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CENTERA_LIB_PATH
-
-# 3. Copy ONLY the compiled artifacts from the builder (No source code, no pom.xml, no .m2 cache)
-COPY --from=builder /code/target/ecsj-1.0-SNAPSHOT.jar ./
-COPY --from=builder /code/target/dependency ./dependency
-COPY --from=builder /code/ecsjstart.sh ./
-
-RUN chmod +x ./ecsjstart.sh
-RUN mkdir blobs
-
-# The final runtime executes cleanly with zero build-tool bloat
-ENTRYPOINT ["./ecsjstart.sh"]
+# --- Execution ---
+if __name__ == "__main__":
+    extracted_list = scrape_dashboard_table(TARGET_URL)
+    
+    if extracted_list:
+        df = pd.DataFrame(extracted_list)
+        print("\nSuccessfully Grabbed Data:")
+        print(df.to_string(index=False))
+        
+        # Export data to Excel/CSV
+        df.to_csv("live_scraped_binaries.csv", index=False)
+        print("\nData saved to 'live_scraped_binaries.csv'")
+    else:
+        print("No matching data rows found. Please check your URL or page DOM structure.")
