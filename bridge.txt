@@ -4,38 +4,90 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-TARGET_URL = "https://your-internal-dashboard-url.com/path" # Replace with your actual URL
+# Setup Configuration
+TARGET_URL = "https://your-internal-dashboard-url.com/path"  # Replace with your actual URL
 
-def debug_dropdown_options(url):
-    driver = webdriver.Edge()
+def scrape_entire_table_data(url):
+    options = webdriver.EdgeOptions()
+    options.add_argument('--start-maximized')
+    
+    driver = webdriver.Edge(options=options)
+    all_table_data = []
+
     try:
+        print("Navigating to target page...")
         driver.get(url)
-        print("Waiting for page load...")
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select")))
         
-        # Open the dropdown wrapper
-        dropdown_trigger = driver.find_element(By.CSS_SELECTOR, ".v-data-footer__select .v-input__control, .v-data-footer__select .v-select__selections")
+        # 1. Wait for the pagination footer to render
+        print("Waiting for the footer container to load...")
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select"))
+        )
+        time.sleep(2) 
+
+        # 2. Click the 'Rows per page' dropdown selector wrapper
+        print("Clicking 'Rows per page' dropdown selector...")
+        dropdown_trigger = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, ".v-data-footer__select .v-input__control, .v-data-footer__select .v-select__selections"))
+        )
         driver.execute_script("arguments[0].click();", dropdown_trigger)
         time.sleep(2)
+
+        # 3. Select 'All' using the specific text mappings found in diagnostics
+        print("Selecting 'All' row selection from active overlay menu...")
+        # Targets the exact string elements found in your diagnostic output log
+        all_option = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//*[text()='All'] | //div[contains(text(), 'All')] | //*[contains(text(), '134 binaries')]"))
+        )
+        driver.execute_script("arguments[0].click();", all_option)
         
-        print("\n--- DIAGNOSTIC DATA ---")
-        # Find every single visible overlay menu list item on screen
-        menu_items = driver.find_elements(By.XPATH, "//div[contains(@class, 'v-list-item')] | //*[contains(@id, 'list-item')]")
+        # 4. Give the browser ample time to rebuild the table with all 134 records
+        print("Waiting for table grid to completely expand rows...")
+        time.sleep(6) 
+
+        # 5. Grab all rows currently living in the expanded UI
+        print("Locating all live data rows on screen...")
+        rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
         
-        if not menu_items:
-            print("No items found using primary lookups. Scraping all text inside active overlay containers...")
-            menu_items = driver.find_elements(By.CSS_SELECTOR, ".v-menu__content, .v-overlay-container")
+        # Fallback selector if standard layout elements are omitted
+        if not rows:
+            rows = driver.find_elements(By.CSS_SELECTOR, "tr")
+
+        print(f"Extracting cells and writing to variable from all {len(rows)} rows...")
+
+        for row in rows:
+            # Locate text columns inside this specific row object
+            cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
+            row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
             
-        for idx, item in enumerate(menu_items):
-            text = item.text.strip().replace('\n', ', ')
-            if text:
-                print(f"Option index [{idx}]: Text value -> '{text}'")
-        print("-----------------------\n")
-                
+            # Append rows that are not blank matrix blocks
+            if row_data:
+                all_table_data.append(row_data)
+
     except Exception as e:
-        print(f"Diagnostic failed: {e}")
+        print(f"\nAn error occurred during execution: {e}")
+        
     finally:
         driver.quit()
 
+    return all_table_data
+
+
+# --- Execution ---
 if __name__ == "__main__":
-    debug_dropdown_options(TARGET_URL)
+    # This stores the dynamic records into your master variable array
+    scraped_table_variable = scrape_entire_table_data(TARGET_URL)
+    
+    if scraped_table_variable:
+        print(f"\nSuccessfully stored {len(scraped_table_variable)} rows inside Python variable!")
+        print("-" * 100)
+        
+        print(f"Total Rows Captured: {len(scraped_table_variable)}")
+        print("Previewing Samples Stored:")
+        # Prints up to the first 5 entries
+        for index, row in enumerate(scraped_table_variable[:5]):
+            print(f"Row {index + 1}: {row}")
+            
+        print("-" * 100)
+    else:
+        print("\nFailed to expand or pull records. The variable remains empty.")
