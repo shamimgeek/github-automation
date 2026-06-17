@@ -1,6 +1,7 @@
 import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -12,8 +13,6 @@ def scrape_entire_table_data(url):
     options.add_argument('--start-maximized')
     
     driver = webdriver.Edge(options=options)
-    
-    # Standard Python list of lists to hold our complete table data matrix
     all_table_data = []
 
     try:
@@ -21,51 +20,52 @@ def scrape_entire_table_data(url):
         driver.get(url)
         
         # 1. Wait for the page structure to settle
-        print("Waiting for the table container to load...")
+        print("Waiting for the footer container to load...")
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select"))
         )
         time.sleep(2) 
 
-        # 2. Click the 'Rows per page' dropdown menu trigger
-        print("Clicking 'Rows per page' dropdown selector...")
-        dropdown_trigger = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, ".v-data-footer__select .v-input__control, .v-data-footer__select .v-select__selections"))
+        # 2. Force open the dropdown using keyboard actions on the hidden input element
+        print("Targeting dropdown input and forcing menu open...")
+        # Locates the actual invisible input field Vuetify uses for form control
+        hidden_input = WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".v-data-footer__select input"))
         )
-        driver.execute_script("arguments[0].click();", dropdown_trigger)
+        
+        # Clicking the input directly and passing space/down key forces the Vuetify menu overlay visible
+        hidden_input.click()
+        time.sleep(0.5)
+        hidden_input.send_keys(Keys.SPACE) 
         time.sleep(1.5)
 
-        # 3. Select 'All' from the dropdown menu list
-        print("Selecting 'All' to expand row count...")
+        # 3. Find and select 'All' option from the newly visible floating list
+        print("Searching for and selecting 'All' option...")
         all_option = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'v-list-item__title') and text()='All'] | //div[contains(@class, 'v-list-item') and .//text()='All'] | //*[text()='All']"))
         )
         driver.execute_script("arguments[0].click();", all_option)
         
-        # 4. Wait for the rows to fully populate inside the browser window
-        print("Waiting for data table to expand completely...")
+        # 4. Wait for the rows to dynamically build in the browser window
+        print("Waiting for table to fully update layout with all records...")
         time.sleep(6) 
 
-        # 5. Extract every row inside the active table body 
-        print("Locating all live data cells across rows...")
-        
-        # Targets standard table rows 'tr', or fallback to Vuetify flex grid rows if applicable
+        # 5. Live extraction of all rendered rows inside the active table body 
+        print("Locating all populated rows...")
         rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
         
-        # If the direct table layout didn't catch, fall back to general row elements
+        # Backup selector fallback if standard layout tags are omitted
         if not rows:
             rows = driver.find_elements(By.CSS_SELECTOR, "tr")
 
-        print(f"Processing and storing {len(rows)} data rows...")
+        print(f"Extracting and storing data from all {len(rows)} matching table rows...")
 
         for row in rows:
-            # Find all individual table cell contents inside this specific row
+            # Grabbing child text cell configurations
             cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
-            
-            # Extract text elements and clean whitespace strings
             row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
             
-            # Guard filter: only append rows that successfully contained cell texts
+            # Save if the parsed matrix list isn't empty
             if row_data:
                 all_table_data.append(row_data)
 
@@ -80,20 +80,20 @@ def scrape_entire_table_data(url):
 
 # --- Execution ---
 if __name__ == "__main__":
-    # Your variable storing all captured data
+    # Extracted list of lists variable
     scraped_table_variable = scrape_entire_table_data(TARGET_URL)
     
     if scraped_table_variable:
         print(f"\nSuccessfully stored {len(scraped_table_variable)} rows inside Python variable!")
         print("-" * 80)
         
-        # Print a preview of the first 5 records cleanly
-        print("Previewing First 5 Records Stored in your Python variable:")
-        for index, row in enumerate(scraped_table_variable[:5]):
+        # Print a preview of the records cleanly
+        print(f"Total Rows Extracted: {len(scraped_table_variable)}")
+        print("Previewing First 3 Rows:")
+        for index, row in enumerate(scraped_table_variable[:3]):
             print(f"Row {index + 1}: {row}")
             
         print("-" * 80)
         print(f"Python Variable Datatype: {type(scraped_table_variable)}")
-        print(f"Row Structure Datatype: {type(scraped_table_variable[0])}")
     else:
-        print("\nFailed to extract table data. Verify the page layout identifiers match.")
+        print("\nFailed to expand the table dynamically. Variable is empty.")
