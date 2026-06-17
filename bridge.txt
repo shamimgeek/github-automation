@@ -1,6 +1,4 @@
-import re
 import time
-from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -9,87 +7,67 @@ from selenium.webdriver.support import expected_conditions as EC
 # Setup Configuration
 TARGET_URL = "https://your-internal-dashboard-url.com/path"  # Replace with your actual URL
 
-def scrape_all_dashboard_data(url):
+def scrape_entire_table_data(url):
     options = webdriver.EdgeOptions()
     options.add_argument('--start-maximized')
-    # options.add_argument('--headless') # Keep commented to monitor execution visually
     
     driver = webdriver.Edge(options=options)
     
-    # Standard Python List to store our final dictionaries
-    parsed_data = []
+    # Standard Python list of lists to hold our complete table data matrix
+    all_table_data = []
 
     try:
         print("Navigating to target page...")
         driver.get(url)
         
-        # 1. Wait for the primary layout structure to settle
+        # 1. Wait for the page structure to settle
         print("Waiting for the table container to load...")
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select"))
         )
         time.sleep(2) 
 
-        # 2. Click the 'Rows per page' dropdown menu trigger (Vuetify structure)
+        # 2. Click the 'Rows per page' dropdown menu trigger
         print("Clicking 'Rows per page' dropdown selector...")
         dropdown_trigger = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, ".v-data-footer__select .v-input__control, .v-data-footer__select .v-select__selections"))
         )
-        # Using JS click to bypass Vuetify layout element overlapping rules
         driver.execute_script("arguments[0].click();", dropdown_trigger)
         time.sleep(1.5)
 
-        # 3. Select 'All' from the Vuetify dynamic menu list popup
+        # 3. Select 'All' from the dropdown menu list
         print("Selecting 'All' to expand row count...")
         all_option = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'v-list-item__title') and text()='All'] | //div[contains(@class, 'v-list-item') and .//text()='All'] | //*[text()='All']"))
         )
         driver.execute_script("arguments[0].click();", all_option)
         
-        # 4. Wait for the page to completely reload all rows (e.g. 134 items)
-        print("Waiting for data table to completely expand...")
+        # 4. Wait for the rows to fully populate inside the browser window
+        print("Waiting for data table to expand completely...")
         time.sleep(6) 
 
-        # 5. Extract expanded page source and parse with BeautifulSoup
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        # 5. Extract every row inside the active table body 
+        print("Locating all live data cells across rows...")
         
-        # Vuetify tables usually group rows inside 'tr' elements or custom flex containers
-        rows = soup.find_all(['tr', 'div'], class_=re.compile(r'(row|table-row|grid-row)', re.I)) or soup.find_all('tr')
+        # Targets standard table rows 'tr', or fallback to Vuetify flex grid rows if applicable
+        rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
         
-        print(f"Total rows rendered on screen: {len(rows)}. Extracting valid target entries...")
+        # If the direct table layout didn't catch, fall back to general row elements
+        if not rows:
+            rows = driver.find_elements(By.CSS_SELECTOR, "tr")
 
-        # Tracking set to filter out any duplicate rows picked up by abstract HTML tags
-        seen_entries = set()
+        print(f"Processing and storing {len(rows)} data rows...")
 
         for row in rows:
-            text_content = row.get_text(separator="||")
+            # Find all individual table cell contents inside this specific row
+            cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
             
-            # Identify row signature match
-            if "com/db/pr2" in text_content:
-                # Target path components, Dates, and Lifecycle options
-                match_path = re.search(r'com/db/pr2/([\w\-]+)/v?([\d\.]+)/manifest\.json', text_content)
-                match_date = re.search(r'(\d{2}-[A-Za-z]{3}-\d{4})', text_content)
-                match_lifecycle = re.search(r'(RELEASE_CANDIDATE|PROD_LIVE|RELEASE|SNAPSHOT|DEVELOPMENT)', text_content)
-                
-                if match_path and match_date and match_lifecycle:
-                    binary_name = match_path.group(1)
-                    version = match_path.group(2)
-                    modified_date = match_date.group(1)
-                    lifecycle = match_lifecycle.group(1)
-                    
-                    # Create a unique key fingerprint to avoid duplicates
-                    fingerprint = (binary_name, version, modified_date, lifecycle)
-                    
-                    if fingerprint not in seen_entries:
-                        seen_entries.add(fingerprint)
-                        
-                        # Append raw data entry as a native dictionary
-                        parsed_data.append({
-                            "binary_name": binary_name,
-                            "version": version,
-                            "artifact_modified_date": modified_date,
-                            "binary_lifecycle": lifecycle
-                        })
+            # Extract text elements and clean whitespace strings
+            row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
+            
+            # Guard filter: only append rows that successfully contained cell texts
+            if row_data:
+                all_table_data.append(row_data)
 
     except Exception as e:
         print(f"\nAn error occurred during execution: {e}")
@@ -97,31 +75,25 @@ def scrape_all_dashboard_data(url):
     finally:
         driver.quit()
 
-    return parsed_data
+    return all_table_data
 
 
 # --- Execution ---
 if __name__ == "__main__":
-    # Execute and assign data to a native Python variable array
-    my_extracted_data = scrape_all_dashboard_data(TARGET_URL)
+    # Your variable storing all captured data
+    scraped_table_variable = scrape_entire_table_data(TARGET_URL)
     
-    if my_extracted_data:
-        print(f"\nSuccessfully Grabbed {len(my_extracted_data)} Unique Entries.")
-        print("-" * 110)
-        # Print header format
-        print(f"{'BINARY NAME':<30} | {'VERSION':<12} | {'MODIFIED DATE':<15} | {'LIFECYCLE':<20}")
-        print("-" * 110)
+    if scraped_table_variable:
+        print(f"\nSuccessfully stored {len(scraped_table_variable)} rows inside Python variable!")
+        print("-" * 80)
         
-        # Loop through native data structure and print rows clearly
-        for item in my_extracted_data:
-            print(f"{item['binary_name']:<30} | {item['version']:<12} | {item['artifact_modified_date']:<15} | {item['binary_lifecycle']:<20}")
-        
-        print("-" * 110)
-        print("\nPython Datatype Verification:")
-        print(f"Data type: {type(my_extracted_data)}")
-        print(f"First item type: {type(my_extracted_data[0])}")
-        print("\nRaw Data Sample:")
-        print(my_extracted_data[:2]) # Prints first 2 raw dictionaries as proof
-        
+        # Print a preview of the first 5 records cleanly
+        print("Previewing First 5 Records Stored in your Python variable:")
+        for index, row in enumerate(scraped_table_variable[:5]):
+            print(f"Row {index + 1}: {row}")
+            
+        print("-" * 80)
+        print(f"Python Variable Datatype: {type(scraped_table_variable)}")
+        print(f"Row Structure Datatype: {type(scraped_table_variable[0])}")
     else:
-        print("\nNo rows matching 'com/db/pr2' could be extracted.")
+        print("\nFailed to extract table data. Verify the page layout identifiers match.")
