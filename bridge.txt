@@ -1,6 +1,7 @@
 import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -25,18 +26,34 @@ def scrape_entire_table_data(url):
         )
         time.sleep(3) 
 
-        # 2. Open the 'Rows per page' menu popup window
+        # 2. Trigger the 'Rows per page' dropdown menu to pop open
         print("Clicking 'Rows per page' dropdown selector...")
-        dropdown_trigger = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, ".v-data-footer__select .v-input__control, .v-data-footer__select .v-select__selections"))
-        )
-        driver.execute_script("arguments[0].click();", dropdown_trigger)
-        time.sleep(2)
-
-        # 3. Target 'All' STRICTLY inside Vuetify's active menu box popover
-        print("Selecting 'All' from the isolated active menu popover...")
         
-        # This XPATH focuses exclusively on the active menu content layer container from your DOM inspection snapshot
+        # Target the precise selection slot where the text "10" sits inside the footer
+        dropdown_trigger = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, (
+                ".v-data-footer__select .v-select__slot, "
+                ".v-data-footer__select .v-select__selections, "
+                ".v-data-footer__select .v-input__control"
+            )))
+        )
+        
+        try:
+            # Strategy A: Native Selenium Click
+            dropdown_trigger.click()
+        except Exception:
+            try:
+                # Strategy B: ActionChains Mouse Move & Click
+                ActionChains(driver).move_to_element(dropdown_trigger).click().perform()
+            except Exception:
+                # Strategy C: JavaScript Click fallback
+                driver.execute_script("arguments[0].click();", dropdown_trigger)
+                
+        print("Waiting for dropdown options menu overlay to pop up...")
+        time.sleep(2.5)
+
+        # 3. Target 'All' strictly inside Vuetify's active menu box popover
+        print("Selecting 'All' from the active menu overlay...")
         all_option = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, (
                 "//div[contains(@class, 'menuable__content__active')]//*[text()='All' or normalize-space()='All']"
@@ -44,8 +61,8 @@ def scrape_entire_table_data(url):
         )
         driver.execute_script("arguments[0].click();", all_option)
         
-        # 4. Give the browser ample time to rebuild the table with all rows
-        print("Waiting for table layout to fully expand records...")
+        # 4. Give the browser ample time to rebuild the table grid with all 134 entries
+        print("Waiting for data table layout to fully expand records...")
         time.sleep(7) 
 
         # 5. Grab all rows currently living in the expanded UI matrix
@@ -87,7 +104,6 @@ if __name__ == "__main__":
         
         print(f"Total Rows Captured: {len(scraped_table_variable)}")
         print("Previewing Samples Stored:")
-        # Prints up to the first 5 entries
         for index, row in enumerate(scraped_table_variable[:5]):
             print(f"Row {index + 1}: {row}")
             
