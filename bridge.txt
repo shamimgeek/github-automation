@@ -5,7 +5,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # Setup Configuration
-TARGET_URL = "https://your-internal-dashboard-url.com/path"  # Replace with your actual URL
+TARGET_URL = "https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts" 
 
 def scrape_entire_table_data(url):
     options = webdriver.EdgeOptions()
@@ -18,55 +18,50 @@ def scrape_entire_table_data(url):
         print("Navigating to target page...")
         driver.get(url)
         
-        # 1. Wait for the pagination footer to render
+        # 1. Wait for the pagination footer section layout to render completely
         print("Waiting for the footer container to load...")
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select"))
         )
-        time.sleep(2) 
+        time.sleep(3) 
 
-        # 2. Click the 'Rows per page' dropdown selector wrapper
+        # 2. Open the 'Rows per page' menu popup window
         print("Clicking 'Rows per page' dropdown selector...")
         dropdown_trigger = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, ".v-data-footer__select .v-input__control, .v-data-footer__select .v-select__selections"))
         )
         driver.execute_script("arguments[0].click();", dropdown_trigger)
-        time.sleep(1.5)
+        time.sleep(2)
 
-        # 3. Target 'All' strictly within Vuetify's active menu box popovers
-        print("Selecting 'All' from the dropdown options list...")
-        
-        # This isolated XPATH searches explicitly for list items/titles matching 'All'
-        # to prevent misclicking sidebar elements.
+        # 3. Target 'All' strictly from menu overlay/list elements to bypass sidebar matches
+        print("Selecting 'All' from the footer options layout...")
         all_option = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, (
-                "//div[contains(@class, 'v-list-item__title')][text()='All'] | "
-                "//div[contains(@class, 'v-list-item')][.//*[text()='All']] | "
-                "//div[@role='option']//*[text()='All']"
+                "//div[@role='listbox']//*[text()='All'] | "
+                "//div[contains(@class, 'v-menu__content')]//*[text()='All' or text()=' All '] | "
+                "//div[contains(@class, 'v-list-item__title') and text()='All']"
             )))
         )
         driver.execute_script("arguments[0].click();", all_option)
         
-        # 4. Give the browser ample time to rebuild the table with all rows
-        print("Waiting for table layout to fully expand records...")
-        time.sleep(6) 
+        # 4. Give the browser ample time to load all 134 records down the DOM tree
+        print("Waiting for table grid to expand completely...")
+        time.sleep(7) 
 
-        # 5. Grab all rows currently living in the expanded UI matrix
-        print("Locating all live data rows on screen...")
+        # 5. Extract every live row element painted on screen
+        print("Locating all live data rows...")
         rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
         
-        # Fallback selector if standard layout elements are omitted
         if not rows:
             rows = driver.find_elements(By.CSS_SELECTOR, "tr")
 
-        print(f"Extracting cells and writing to variable from all {len(rows)} rows...")
+        print(f"Reading cells from all {len(rows)} rendered lines...")
 
         for row in rows:
-            # Locate text columns inside this specific row object
+            # Gather all individual cell values within this specific row item
             cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
             row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
             
-            # Append rows that are not blank matrix blocks
             if row_data:
                 all_table_data.append(row_data)
 
@@ -81,7 +76,7 @@ def scrape_entire_table_data(url):
 
 # --- Execution ---
 if __name__ == "__main__":
-    # This stores the dynamic records into your master variable array
+    # Your variable storing all captured data lists
     scraped_table_variable = scrape_entire_table_data(TARGET_URL)
     
     if scraped_table_variable:
@@ -90,7 +85,6 @@ if __name__ == "__main__":
         
         print(f"Total Rows Captured: {len(scraped_table_variable)}")
         print("Previewing Samples Stored:")
-        # Prints up to the first 5 entries
         for index, row in enumerate(scraped_table_variable[:5]):
             print(f"Row {index + 1}: {row}")
             
