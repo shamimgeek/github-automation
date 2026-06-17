@@ -28,8 +28,6 @@ def scrape_entire_table_data(url):
 
         # 2. Trigger the 'Rows per page' dropdown menu to pop open
         print("Clicking 'Rows per page' dropdown selector...")
-        
-        # Target the precise selection slot where the text "10" sits inside the footer
         dropdown_trigger = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, (
                 ".v-data-footer__select .v-select__slot, "
@@ -39,14 +37,11 @@ def scrape_entire_table_data(url):
         )
         
         try:
-            # Strategy A: Native Selenium Click
             dropdown_trigger.click()
         except Exception:
             try:
-                # Strategy B: ActionChains Mouse Move & Click
                 ActionChains(driver).move_to_element(dropdown_trigger).click().perform()
             except Exception:
-                # Strategy C: JavaScript Click fallback
                 driver.execute_script("arguments[0].click();", dropdown_trigger)
                 
         print("Waiting for dropdown options menu overlay to pop up...")
@@ -69,20 +64,37 @@ def scrape_entire_table_data(url):
         print("Locating all live data rows on screen...")
         rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
         
-        # Fallback selector if standard layout elements are omitted
         if not rows:
             rows = driver.find_elements(By.CSS_SELECTOR, "tr")
 
         print(f"Extracting cells and writing to variable from all {len(rows)} rows...")
 
         for row in rows:
-            # Locate text columns inside this specific row object
             cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
             row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
             
-            # Append rows that are not blank matrix blocks
-            if row_data:
-                all_table_data.append(row_data)
+            # Ensure the row is valid and has at least the path column
+            if row_data and len(row_data) > 0:
+                full_path = row_data[0]
+                image_name = "N/A"
+                version = "N/A"
+                
+                # Dynamic Parsing Logic for the path string
+                if "manifest.json" in full_path:
+                    # Example split: ['com', 'db', 'pr2', 'rclone', 'v1.6.0', 'manifest.json']
+                    parts = full_path.split('/')
+                    if len(parts) >= 3:
+                        # Version sits right before manifest.json, Image Name sits right before version
+                        version = parts[-2]
+                        image_name = parts[-3]
+                
+                # Append a clean structured dictionary to your list variable
+                all_table_data.append({
+                    "image_name": image_name,
+                    "version": version,
+                    "full_path": full_path,
+                    "raw_row_data": row_data  # Keeps the rest of the columns intact
+                })
 
     except Exception as e:
         print(f"\nAn error occurred during execution: {e}")
@@ -95,18 +107,18 @@ def scrape_entire_table_data(url):
 
 # --- Execution ---
 if __name__ == "__main__":
-    # This stores the dynamic records into your master variable array
     scraped_table_variable = scrape_entire_table_data(TARGET_URL)
     
     if scraped_table_variable:
         print(f"\nSuccessfully stored {len(scraped_table_variable)} rows inside Python variable!")
-        print("-" * 100)
+        print("-" * 120)
+        print(f"{'IMAGE NAME':<25} | {'VERSION':<15} | {'FULL PATH'}")
+        print("-" * 120)
         
-        print(f"Total Rows Captured: {len(scraped_table_variable)}")
-        print("Previewing Samples Stored:")
-        for index, row in enumerate(scraped_table_variable[:5]):
-            print(f"Row {index + 1}: {row}")
+        # Preview the parsing results for the first 10 rows
+        for item in scraped_table_variable[:10]:
+            print(f"{item['image_name']:<25} | {item['version']:<15} | {item['full_path']}")
             
-        print("-" * 100)
-    else:
-        print("\nFailed to expand or pull records. The variable remains empty.")
+        print("-" * 120)
+        print("\nStructure Sample of a single entry inside the variable:")
+        print(scraped_table_variable[1])
