@@ -1,4 +1,4 @@
-pip install selenium beautifulsoup4 pandas
+pip3 install selenium beautifulsoup4 pandas msedgedriver
 
 
 import re
@@ -6,6 +6,7 @@ import time
 import pandas as pd
 from bs4 import BeautifulSoup
 from selenium import webdriver
+from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -14,11 +15,15 @@ from selenium.webdriver.support import expected_conditions as EC
 TARGET_URL = "https://your-internal-dashboard-url.com/path"  # Replace with your actual URL
 
 def scrape_dashboard_table(url):
-    # Initialize the WebDriver (Make sure Chrome/Chromedriver is installed)
-    options = webdriver.ChromeOptions()
+    # Initialize Edge Options
+    options = webdriver.EdgeOptions()
+    
+    # Optional performance flags
+    options.add_argument('--start-maximized')
     # options.add_argument('--headless') # Uncomment to run background without opening browser window
     
-    driver = webdriver.Chrome(options=options)
+    # Initialize the Edge WebDriver
+    driver = webdriver.Edge(options=options)
     parsed_data = []
 
     try:
@@ -26,27 +31,24 @@ def scrape_dashboard_table(url):
         driver.get(url)
         
         # --- LOGIN / AUTH HANDLING (If needed) ---
-        # If your page requires login, uncomment and adjust these lines:
-        # WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "username"))).send_keys("your_username")
-        # driver.find_by_id("password").send_keys("your_password")
-        # driver.find_element(By.ID, "login-btn").click()
+        # If your page requires SSO/Login, running it non-headless allows you to log in manually here.
         
-        print("Waiting for the dashboard data table to load...")
+        print("Waiting for the Edge browser to load the data table...")
         # Adjust the selector below to match an element or table class on your specific page
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'com/db/pr2')] | //table"))
         )
         
-        # Give JS components an extra moment to fully render all row content
+        # Give dynamic JS components an extra moment to fully render
         time.sleep(3) 
 
         # 2. Extract page source and parse with BeautifulSoup
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
-        # Find all table rows (adjust tag names like 'tr' or 'div' based on the site's structure)
+        # Find all table rows
         rows = soup.find_all(['tr', 'div'], class_=re.compile(r'(row|table-row|grid-row)', re.I)) or soup.find_all('tr')
         
-        print(f"Found {len(rows)} potential data rows. Parsing...")
+        print(f"Found {len(rows)} potential data rows. Parsing text...")
 
         for row in rows:
             text_content = row.get_text(separator="||")
@@ -72,6 +74,7 @@ def scrape_dashboard_table(url):
                     })
 
     finally:
+        # Properly close the Edge browser instance
         driver.quit()
 
     return parsed_data
@@ -82,11 +85,11 @@ if __name__ == "__main__":
     
     if extracted_list:
         df = pd.DataFrame(extracted_list)
-        print("\nSuccessfully Grabbed Data:")
+        print("\nSuccessfully Grabbed Data via Microsoft Edge:")
         print(df.to_string(index=False))
         
-        # Export data to Excel/CSV
-        df.to_csv("live_scraped_binaries.csv", index=False)
-        print("\nData saved to 'live_scraped_binaries.csv'")
+        # Export data to CSV
+        df.to_csv("edge_scraped_binaries.csv", index=False)
+        print("\nData saved to 'edge_scraped_binaries.csv'")
     else:
-        print("No matching data rows found. Please check your URL or page DOM structure.")
+        print("No matching data rows found. Please check your URL or page structure filters.")
