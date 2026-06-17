@@ -6,90 +6,98 @@ import time
 import pandas as pd
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# 1. Setup Your Configuration
+# Setup Configuration
 TARGET_URL = "https://your-internal-dashboard-url.com/path"  # Replace with your actual URL
 
-def scrape_dashboard_table(url):
-    # Initialize Edge Options
+def scrape_all_dashboard_data(url):
     options = webdriver.EdgeOptions()
-    
-    # Optional performance flags
     options.add_argument('--start-maximized')
-    # options.add_argument('--headless') # Uncomment to run background without opening browser window
+    # options.add_argument('--headless') # Leave commented to watch the interaction happen
     
-    # Initialize the Edge WebDriver
     driver = webdriver.Edge(options=options)
     parsed_data = []
 
     try:
-        # Open the webpage
+        print("Navigating to target page...")
         driver.get(url)
         
-        # --- LOGIN / AUTH HANDLING (If needed) ---
-        # If your page requires SSO/Login, running it non-headless allows you to log in manually here.
-        
-        print("Waiting for the Edge browser to load the data table...")
-        # Adjust the selector below to match an element or table class on your specific page
+        # 1. Wait for the primary table data to load initially
+        print("Waiting for the table container to load...")
         WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'com/db/pr2')] | //table"))
+            EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Rows per page:')]"))
         )
-        
-        # Give dynamic JS components an extra moment to fully render
-        time.sleep(3) 
+        time.sleep(2) # Brief structural settle time
 
-        # 2. Extract page source and parse with BeautifulSoup
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        # 2. Click the 'Rows per page' dropdown menu trigger
+        print("Clicking 'Rows per page' dropdown selector...")
+        # XPATH targets the element containing or directly next to the active number (10)
+        dropdown_trigger = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Rows per page:')]/following-sibling::div | //*[div[contains(text(), '10') and not(contains(@class, 'hidden'))]]"))
+        )
+        dropdown_trigger.click()
+        time.sleep(1)
+
+        # 3. Select 'All' from the dropdown list menu popover
+        print("Selecting 'All' to expand row count...")
+        all_option = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//li[text()='All'] | //div[text()='All'] | //*[contains(text(), 'All')]"))
+        )
+        all_option.click()
         
-        # Find all table rows
+        # 4. Wait for the page to dynamically refresh with all 134+ elements
+        print("Waiting for data table to completely reload with all items...")
+        time.sleep(5) 
+
+        # 5. Extract fully expanded page source and parse with BeautifulSoup
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
         rows = soup.find_all(['tr', 'div'], class_=re.compile(r'(row|table-row|grid-row)', re.I)) or soup.find_all('tr')
         
-        print(f"Found {len(rows)} potential data rows. Parsing text...")
+        print(f"Total rows rendered on screen: {len(rows)}. Parsing valid entries...")
 
         for row in rows:
             text_content = row.get_text(separator="||")
             
-            # Check if this row belongs to your target path structure
+            # Look for target path string signature
             if "com/db/pr2" in text_content:
-                # Regex to isolate: Path, Modified Date, and Lifecycle
+                # Dynamic Regex to isolate Path structure, Dates, and updated Lifecycle definitions (like PROD_LIVE)
                 match_path = re.search(r'com/db/pr2/([\w\-]+)/v?([\d\.]+)/manifest\.json', text_content)
                 match_date = re.search(r'(\d{2}-[A-Za-z]{3}-\d{4})', text_content)
-                match_lifecycle = re.search(r'(RELEASE_CANDIDATE|RELEASE|SNAPSHOT|DEVELOPMENT)', text_content)
+                match_lifecycle = re.search(r'(RELEASE_CANDIDATE|PROD_LIVE|RELEASE|SNAPSHOT|DEVELOPMENT)', text_content)
                 
                 if match_path and match_date and match_lifecycle:
-                    binary_name = match_path.group(1)
-                    version = match_path.group(2)
-                    modified_date = match_date.group(1)
-                    lifecycle = match_lifecycle.group(1)
-                    
                     parsed_data.append({
-                        "Binary Name": binary_name,
-                        "Version": version,
-                        "Artifact Modified Date": modified_date,
-                        "Binary Lifecycle": lifecycle
+                        "Binary Name": match_path.group(1),
+                        "Version": match_path.group(2),
+                        "Artifact Modified Date": match_date.group(1),
+                        "Binary Lifecycle": match_lifecycle.group(1)
                     })
 
+    except Exception as e:
+        print(f"An error occurred during execution: {e}")
+        
     finally:
-        # Properly close the Edge browser instance
         driver.quit()
 
     return parsed_data
 
 # --- Execution ---
 if __name__ == "__main__":
-    extracted_list = scrape_dashboard_table(TARGET_URL)
+    extracted_list = scrape_all_dashboard_data(TARGET_URL)
     
     if extracted_list:
         df = pd.DataFrame(extracted_list)
-        print("\nSuccessfully Grabbed Data via Microsoft Edge:")
+        # Drop duplicates in case rows are picked up twice by abstract tag lookups
+        df = df.drop_duplicates()
+        
+        print(f"\nSuccessfully Grabbed {len(df)} Unique Rows via Edge Browser:")
         print(df.to_string(index=False))
         
-        # Export data to CSV
-        df.to_csv("edge_scraped_binaries.csv", index=False)
-        print("\nData saved to 'edge_scraped_binaries.csv'")
+        # Export full list data to CSV
+        df.to_csv("edge_all_binaries.csv", index=False)
+        print("\nAll records saved cleanly to 'edge_all_binaries.csv'")
     else:
-        print("No matching data rows found. Please check your URL or page structure filters.")
+        print("No matching rows could be extracted. Double check dropdown selector matches DOM structure.")
