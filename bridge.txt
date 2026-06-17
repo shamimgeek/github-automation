@@ -33,37 +33,37 @@ def scrape_entire_table_data(url):
         driver.execute_script("arguments[0].click();", dropdown_trigger)
         time.sleep(2)
 
-        # 3. Target 'All' using layout positioning within the menu wrapper context
-        print("Selecting 'All' option from the footer options layout...")
+        # 3. Target 'All' STRICTLY inside Vuetify's active menu box popover
+        print("Selecting 'All' from the isolated active menu popover...")
         
-        # Instead of parsing generic strings, this grabs the absolute LAST list item option 
-        # inside the active menu content overlay block, completely bypassing the sidebar template.
+        # This XPATH focuses exclusively on the active menu content layer container from your DOM inspection snapshot
         all_option = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, (
-                "//div[contains(@class, 'v-menu__content') or @role='listbox']//div[contains(@class, 'v-list-item')][last()] | "
-                "//div[contains(@class, 'v-menu__content')]//div[text()='All' or contains(text(), 'All')]"
+                "//div[contains(@class, 'menuable__content__active')]//*[text()='All' or normalize-space()='All']"
             )))
         )
         driver.execute_script("arguments[0].click();", all_option)
         
-        # 4. Give the browser ample time to load all records down the DOM tree
-        print("Waiting for data table grid to completely expand rows...")
+        # 4. Give the browser ample time to rebuild the table with all rows
+        print("Waiting for table layout to fully expand records...")
         time.sleep(7) 
 
-        # 5. Extract every live row element painted on screen
-        print("Locating all live data rows...")
+        # 5. Grab all rows currently living in the expanded UI matrix
+        print("Locating all live data rows on screen...")
         rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
         
+        # Fallback selector if standard layout elements are omitted
         if not rows:
             rows = driver.find_elements(By.CSS_SELECTOR, "tr")
 
-        print(f"Reading cells from all {len(rows)} rendered lines...")
+        print(f"Extracting cells and writing to variable from all {len(rows)} rows...")
 
         for row in rows:
-            # Gather all individual cell values within this specific row item
+            # Locate text columns inside this specific row object
             cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
             row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
             
+            # Append rows that are not blank matrix blocks
             if row_data:
                 all_table_data.append(row_data)
 
@@ -78,7 +78,7 @@ def scrape_entire_table_data(url):
 
 # --- Execution ---
 if __name__ == "__main__":
-    # Your variable storing all captured data lists
+    # This stores the dynamic records into your master variable array
     scraped_table_variable = scrape_entire_table_data(TARGET_URL)
     
     if scraped_table_variable:
@@ -87,6 +87,7 @@ if __name__ == "__main__":
         
         print(f"Total Rows Captured: {len(scraped_table_variable)}")
         print("Previewing Samples Stored:")
+        # Prints up to the first 5 entries
         for index, row in enumerate(scraped_table_variable[:5]):
             print(f"Row {index + 1}: {row}")
             
