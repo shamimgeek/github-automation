@@ -1,4 +1,5 @@
 import time
+import requests  # Prepared for your future POST requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
@@ -13,7 +14,9 @@ def scrape_entire_table_data(url):
     options.add_argument('--start-maximized')
     
     driver = webdriver.Edge(options=options)
-    all_table_data = []
+    
+    # Changed to a dictionary tracking list elements per image to handle multiple versions
+    grouped_image_data = {}
 
     try:
         print("Navigating to target page...")
@@ -73,7 +76,6 @@ def scrape_entire_table_data(url):
             cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
             row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
             
-            # Ensure the row is valid and has at least the path column
             if row_data and len(row_data) > 0:
                 full_path = row_data[0]
                 image_name = "N/A"
@@ -81,19 +83,20 @@ def scrape_entire_table_data(url):
                 
                 # Dynamic Parsing Logic for the path string
                 if "manifest.json" in full_path:
-                    # Example split: ['com', 'db', 'pr2', 'rclone', 'v1.6.0', 'manifest.json']
                     parts = full_path.split('/')
                     if len(parts) >= 3:
-                        # Version sits right before manifest.json, Image Name sits right before version
                         version = parts[-2]
                         image_name = parts[-3]
                 
-                # Append a clean structured dictionary to your list variable
-                all_table_data.append({
-                    "image_name": image_name,
+                # Initialize the list for this image name if it doesn't exist yet
+                if image_name not in grouped_image_data:
+                    grouped_image_data[image_name] = []
+                
+                # Append the unique version data under the image name key bucket
+                grouped_image_data[image_name].append({
                     "version": version,
                     "full_path": full_path,
-                    "raw_row_data": row_data  # Keeps the rest of the columns intact
+                    "raw_row_data": row_data
                 })
 
     except Exception as e:
@@ -102,23 +105,49 @@ def scrape_entire_table_data(url):
     finally:
         driver.quit()
 
-    return all_table_data
+    return grouped_image_data
 
 
 # --- Execution ---
 if __name__ == "__main__":
-    scraped_table_variable = scrape_entire_table_data(TARGET_URL)
+    # Scrape data and get the dictionary structured image-wise
+    scraped_images = scrape_entire_table_data(TARGET_URL)
     
-    if scraped_table_variable:
-        print(f"\nSuccessfully stored {len(scraped_table_variable)} rows inside Python variable!")
-        print("-" * 120)
-        print(f"{'IMAGE NAME':<25} | {'VERSION':<15} | {'FULL PATH'}")
-        print("-" * 120)
+    if scraped_images:
+        print(f"\nSuccessfully stored {len(scraped_images)} unique image groups inside Python variable!")
+        print("-" * 100)
         
-        # Preview the parsing results for the first 10 rows
-        for item in scraped_table_variable[:10]:
-            print(f"{item['image_name']:<25} | {item['version']:<15} | {item['full_path']}")
+        # Simulated target file data/list for demonstration purposes
+        # Replace this with your actual file loading logic (e.g., opening a text/json file)
+        target_file_content = ["v1.6.0", "v2.4.1", "2.21.1-alpine"] 
+        
+        print("Starting conditional loop logic processing...")
+        print("-" * 100)
+        
+        # LOOP 1: Iterate image wise
+        for img_name, entries in scraped_images.items():
+            print(f"\nChecking Image: {img_name} ({len(entries)} versions found)")
             
-        print("-" * 120)
-        print("\nStructure Sample of a single entry inside the variable:")
-        print(scraped_table_variable[1])
+            # LOOP 2: Iterate through all respective versions of this image
+            for entry in entries:
+                current_version = entry["version"]
+                current_path = entry["full_path"]
+                raw_columns = entry["raw_row_data"]
+                
+                # CONDITION: Check if version exists or matches your file data
+                if current_version in target_file_content:
+                    print(f"  ==> MATCH FOUND: Version '{current_version}' matches file data!")
+                    print(f"      Full Path: {current_path}")
+                    print(f"      Raw Record Data: {raw_columns}")
+                    
+                    # ACTION: Execute your POST request here
+                    # url = "https://your-api-endpoint.com/action"
+                    # payload = {"image": img_name, "version": current_version, "path": current_path}
+                    # response = requests.post(url, json=payload)
+                    # print(f"      POST Status: {response.status_code}")
+                else:
+                    print(f"      No action needed for version: {current_version}")
+                    
+        print("-" * 100)
+    else:
+        print("\nFailed to extract records. The variable remains empty.")
