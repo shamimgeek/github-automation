@@ -12,7 +12,7 @@ from selenium.webdriver.support import expected_conditions as EC
 # ==========================================
 #              CONFIGURATION
 # ==========================================
-DRY_RUN = True  # Set to False to execute actual deletion API calls!
+DRY_RUN = True  # Set to False to fire live deletion API requests!
 
 TARGET_URL = "https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts"
 LIVE_IMAGES_FILE = "live_gke_images_PRD_20260618_074837.txt"
@@ -34,6 +34,10 @@ def load_live_gke_images(file_path):
     return live_map
 
 def load_reference_response_metadata(file_path):
+    """
+    Parses response.json schema:
+    Maps (artifact, version) -> {changeName, serviceNowTicketId, binaryPath}
+    """
     metadata_lookup = {}
     if not os.path.exists(file_path):
         print(f"Warning: Ticket reference file '{file_path}' not found.")
@@ -42,13 +46,20 @@ def load_reference_response_metadata(file_path):
     try:
         with open(file_path, mode="r", encoding="utf-8") as f:
             data = json.load(f)
-            change_name = data.get("changeName", "UNKNOWN_RELEASE")
-            snow_ticket = data.get("serviceNowTicketId", "UNKNOWN_TICKET")
+            binary_report_list = data.get("binaryReport", [])
+            print(f"Loaded schema reference. Found {len(binary_report_list)} items inside 'binaryReport'.")
             
-            for item in data.get("binaryRemoveList", []):
+            for item in binary_report_list:
                 art_name = item.get("artifact", "").strip()
                 art_ver = item.get("version", "").strip()
                 binary_path = item.get("binaryPath", "").strip()
+                change_name = item.get("changeName", "UNKNOWN_RELEASE")
+                snow_ticket = item.get("serviceNowTicketId")
+                
+                if snow_ticket is None:
+                    snow_ticket = "N/A"
+                else:
+                    snow_ticket = str(snow_ticket).strip()
                 
                 if art_name and art_ver:
                     metadata_lookup[(art_name, art_ver)] = {
@@ -57,7 +68,7 @@ def load_reference_response_metadata(file_path):
                         "binaryPath": binary_path
                     }
     except Exception as e:
-        print(f"Error parsing response.json file: {e}")
+        print(f"Error parsing response.json file schema: {e}")
     return metadata_lookup
 
 def scrape_entire_table_data(url):
@@ -118,19 +129,18 @@ def scrape_entire_table_data(url):
         driver.quit()
     return all_scraped_rows
 
-# --- Processing Pipeline ---
+# --- Execution Pipeline ---
 if __name__ == "__main__":
-    if DRY_RUN:
-        print("=" * 60)
-        print(" RUNNING IN DRY_RUN MODE - NO REAL DELETIONS WILL BE EXECUTED ")
-        print("=" * 60)
+    print("-" * 60)
+    print(f"EXECUTION MODE: {'[DRY RUN - TESTING]' if DRY_RUN else '[LIVE DELETION RUN]'}")
+    print("-" * 60)
 
     live_gke_inventory = load_live_gke_images(LIVE_IMAGES_FILE)
     reference_tickets = load_reference_response_metadata(RESPONSE_JSON_FILE)
     scraped_entries = scrape_entire_table_data(TARGET_URL)
     
     if scraped_entries:
-        print(f"\nProcessing reconciliation matrix across {len(scraped_entries)} rows...")
+        print(f"\nEvaluating reconciliation matrices across {len(scraped_entries)} components...")
         final_report_rows = []
         
         for entry in scraped_entries:
@@ -143,6 +153,8 @@ if __name__ == "__main__":
             
             live_version_value = "N/A"
             action_value = ""
+            change_name_value = "N/A"
+            snow_ticket_value = "N/A"
             api_payload_string = "N/A"
             api_response_string = "N/A"
             
@@ -152,14 +164,19 @@ if __name__ == "__main__":
             else:
                 action_value = "deleted"
                 
+                # Look up mapping parameters against artifact + version keys
                 match_key = (img_name, ui_version)
                 if reference_tickets and match_key in reference_tickets:
                     ref_data = reference_tickets[match_key]
                     
+                    # Pull values out to distinct dedicated column tracks
+                    change_name_value = ref_data["changeName"]
+                    snow_ticket_value = ref_data["serviceNowTicketId"]
+                    
                     payload = {
                         "nar": "155780-1",
-                        "changeName": ref_data["changeName"],
-                        "serviceNowTicketId": ref_data["serviceNowTicketId"],
+                        "changeName": change_name_value,
+                        "serviceNowTicketId": snow_ticket_value,
                         "binaryRemoveList": [
                             {
                                 "artifact": img_name,
@@ -170,24 +187,21 @@ if __name__ == "__main__":
                     }
                     api_payload_string = json.dumps(payload)
                     
-                    # Dry Run vs Live Execution Split
                     if DRY_RUN:
-                        print(f" [DRY RUN] Would delete: {img_name}:{ui_version}")
-                        api_response_string = "[DRY RUN TEST] Deletion API call skipped successfully."
+                        api_response_string = f"[DRY RUN ACTIVE] Would execute POST API call for {img_name}:{ui_version}."
                     else:
                         try:
-                            print(f" -> Executing LIVE Deletion payload for {img_name}:{ui_version}...")
                             response = requests.post(
                                 ARTIFACTORY_API_URL, 
                                 json=payload, 
                                 headers={"Content-Type": "application/json"},
                                 timeout=15
                             )
-                            api_response_string = f"Status: {response.status_code} | Body: {response.text.strip()}"
+                            api_response_string = f"Status: {response.status_code} | Response: {response.text.strip()}"
                         except Exception as api_err:
-                            api_response_string = f"Failed to call API: {str(api_err)}"
+                            api_response_string = f"API Request Failed: {str(api_err)}"
                 else:
-                    api_response_string = "SKIPPED: Artifact version mismatch or not found in response.json metadata reference definitions."
+                    api_response_string = "SKIPPED: Artifact properties could not be identified inside reference binaryReport schema index."
 
             final_report_rows.append([
                 img_name,
@@ -195,18 +209,21 @@ if __name__ == "__main__":
                 lifecycle,
                 live_version_value,
                 action_value,
+                change_name_value,
+                snow_ticket_value,
                 api_payload_string,
                 api_response_string,
                 full_path
             ])
                 
-        # Write Output CSV Log Asset
+        # Write Out the Clean Consolidated Report with New Requested Fields Included
         with open(CONSOLIDATED_REPORT, mode="w", encoding="utf-8", newline="") as out_file:
             writer = csv.writer(out_file)
             writer.writerow([
                 "image_name", "scraped_version", "lifecycle_status", 
-                "live_version", "action", "api_payload_json", "api_response", "full_path"
+                "live_version", "action", "changeName", "serviceNowTicketId",
+                "api_payload_json", "api_response", "full_path"
             ])
             writer.writerows(final_report_rows)
             
-        print(f"\nCompleted! Consolidated ledger generated successfully at: '{CONSOLIDATED_REPORT}'")
+        print(f"\nReconciliation phase finished! File report compiled successfully at: '{CONSOLIDATED_REPORT}'")
