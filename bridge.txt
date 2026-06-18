@@ -1,93 +1,95 @@
 import time
 import csv
 import os
+import json
+import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# Configuration
+# ==========================================
+#              CONFIGURATION
+# ==========================================
+DRY_RUN = True  # Set to False to execute actual deletion API calls!
+
 TARGET_URL = "https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts"
-LIVE_IMAGES_FILE = "live_gke_images_PRD_20260618_074837.txt" 
+LIVE_IMAGES_FILE = "live_gke_images_PRD_20260618_074837.txt"
+RESPONSE_JSON_FILE = "response.json"  
 CONSOLIDATED_REPORT = "consolidated_artifactory_report.csv"
 
+ARTIFACTORY_API_URL = "https://artifactory.intranet.db.com/artifactory/api/plugins/execute/getallbynar?params=narId=155780-1"
+
 def load_live_gke_images(file_path):
-    """
-    Parses the live GKE text dump file into a dictionary map for quick version lookups.
-    Structure: { 'image_name': set(version1, version2, ...) }
-    """
     live_map = {}
     if not os.path.exists(file_path):
-        print(f"Warning: Live image file '{file_path}' not found. All items will be treated as removed.")
+        print(f"Warning: Live image file '{file_path}' not found.")
         return live_map
-
-    print(f"Loading live cluster data from {file_path}...")
     with open(file_path, mode="r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for row in reader:
             if len(row) >= 2:
-                img_name = row[0].strip()
-                version = row[1].strip()
-                
-                if img_name not in live_map:
-                    live_map[img_name] = set()
-                live_map[img_name].add(version)
+                live_map.setdefault(row[0].strip(), set()).add(row[1].strip())
     return live_map
+
+def load_reference_response_metadata(file_path):
+    metadata_lookup = {}
+    if not os.path.exists(file_path):
+        print(f"Warning: Ticket reference file '{file_path}' not found.")
+        return None
+    
+    try:
+        with open(file_path, mode="r", encoding="utf-8") as f:
+            data = json.load(f)
+            change_name = data.get("changeName", "UNKNOWN_RELEASE")
+            snow_ticket = data.get("serviceNowTicketId", "UNKNOWN_TICKET")
+            
+            for item in data.get("binaryRemoveList", []):
+                art_name = item.get("artifact", "").strip()
+                art_ver = item.get("version", "").strip()
+                binary_path = item.get("binaryPath", "").strip()
+                
+                if art_name and art_ver:
+                    metadata_lookup[(art_name, art_ver)] = {
+                        "changeName": change_name,
+                        "serviceNowTicketId": snow_ticket,
+                        "binaryPath": binary_path
+                    }
+    except Exception as e:
+        print(f"Error parsing response.json file: {e}")
+    return metadata_lookup
 
 def scrape_entire_table_data(url):
     options = webdriver.EdgeOptions()
     options.add_argument('--start-maximized')
-    
     driver = webdriver.Edge(options=options)
-    
-    # Using a flat list of dictionaries to ensure we never lose or overwrite 
-    # rows when an image has multiple versions.
     all_scraped_rows = []
 
     try:
         print("Navigating to target page...")
         driver.get(url)
-        
-        print("Waiting for the footer container to load...")
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select"))
-        )
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select")))
         time.sleep(3) 
 
-        print("Clicking 'Rows per page' dropdown selector...")
         dropdown_trigger = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, (
-                ".v-data-footer__select .v-select__slot, "
-                ".v-data-footer__select .v-select__selections"
-            )))
+            EC.element_to_be_clickable((By.CSS_SELECTOR, ".v-data-footer__select .v-select__slot, .v-data-footer__select .v-select__selections"))
         )
-        
         try:
             dropdown_trigger.click()
         except Exception:
             ActionChains(driver).move_to_element(dropdown_trigger).click().perform()
-                
         time.sleep(2.5)
 
-        print("Selecting 'All' from the active menu overlay...")
         all_option = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, (
-                "//div[contains(@class, 'menuable__content__active')]//*[text()='All' or normalize-space()='All']"
-            )))
+            EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'menuable__content__active')]//*[text()='All' or normalize-space()='All']"))
         )
         driver.execute_script("arguments[0].click();", all_option)
-        
-        print("Waiting for data table layout to fully expand records...")
         time.sleep(7) 
 
-        print("Locating all live data rows on screen...")
         rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
-        
         if not rows:
             rows = driver.find_elements(By.CSS_SELECTOR, "tr")
-
-        print(f"Extracting cells from all {len(rows)} rows...")
 
         for row in rows:
             cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
@@ -95,10 +97,8 @@ def scrape_entire_table_data(url):
             
             if row_data and len(row_data) >= 6:
                 full_path = row_data[0]
-                lifecycle_status = row_data[4].strip() # 'PROD_LIVE' or 'RELEASE_CANDIDATE'
-                
-                image_name = "N/A"
-                version = "N/A"
+                lifecycle_status = row_data[4].strip()
+                image_name, version = "N/A", "N/A"
                 
                 if "manifest.json" in full_path:
                     parts = full_path.split('/')
@@ -106,80 +106,107 @@ def scrape_entire_table_data(url):
                         version = parts[-2]
                         image_name = parts[-3]
                 
-                # Append directly to flat collection to safeguard multi-version entries
                 all_scraped_rows.append({
                     "image_name": image_name,
                     "version": version,
                     "full_path": full_path,
-                    "lifecycle_status": lifecycle_status,
-                    "raw_row_data": row_data
+                    "lifecycle_status": lifecycle_status
                 })
-
     except Exception as e:
-        print(f"\nAn error occurred during UI automation extraction: {e}")
+        print(f"Error extracting UI grid matrix: {e}")
     finally:
         driver.quit()
-
     return all_scraped_rows
 
-
-# --- Evaluation Strategy Execution and Processing Pipeline ---
+# --- Processing Pipeline ---
 if __name__ == "__main__":
-    # 1. Gather all baseline asset arrays
+    if DRY_RUN:
+        print("=" * 60)
+        print(" RUNNING IN DRY_RUN MODE - NO REAL DELETIONS WILL BE EXECUTED ")
+        print("=" * 60)
+
     live_gke_inventory = load_live_gke_images(LIVE_IMAGES_FILE)
+    reference_tickets = load_reference_response_metadata(RESPONSE_JSON_FILE)
     scraped_entries = scrape_entire_table_data(TARGET_URL)
     
     if scraped_entries:
-        print(f"\nProcessing reconciliation matrix across all {len(scraped_entries)} extracted rows...")
+        print(f"\nProcessing reconciliation matrix across {len(scraped_entries)} rows...")
         final_report_rows = []
         
-        # 2. Go through all versions of every image sequentially
         for entry in scraped_entries:
             img_name = entry["image_name"]
             ui_version = entry["version"]
-            lifecycle = entry["lifecycle_status"]
+            lifecycle = entry["lifecycle_status"] 
             full_path = entry["full_path"]
             
-            # Cross-check exactly if this image name AND specific version exist in GKE file
             is_version_live = (img_name in live_gke_inventory and ui_version in live_gke_inventory[img_name])
             
             live_version_value = "N/A"
             action_value = ""
+            api_payload_string = "N/A"
+            api_response_string = "N/A"
             
-            # Core Decision Rule Matrix
             if is_version_live:
                 live_version_value = ui_version
-                if lifecycle == "PROD_LIVE":
-                    action_value = "no action"
-                elif lifecycle == "RELEASE_CANDIDATE":
-                    action_value = "skip"
+                action_value = "no action" if lifecycle == "PROD_LIVE" else "skip"
             else:
-                # Version was NOT found on live GKE system context track
-                lifecycle = f"{lifecycle} (removed)"
-                live_version_value = "N/A"
-                action_value = "DELETE_FROM_ARTIFACTORY"
-            
-            # Save data line structure
+                action_value = "deleted"
+                
+                match_key = (img_name, ui_version)
+                if reference_tickets and match_key in reference_tickets:
+                    ref_data = reference_tickets[match_key]
+                    
+                    payload = {
+                        "nar": "155780-1",
+                        "changeName": ref_data["changeName"],
+                        "serviceNowTicketId": ref_data["serviceNowTicketId"],
+                        "binaryRemoveList": [
+                            {
+                                "artifact": img_name,
+                                "version": ui_version,
+                                "binaryPath": ref_data["binaryPath"]
+                            }
+                        ]
+                    }
+                    api_payload_string = json.dumps(payload)
+                    
+                    # Dry Run vs Live Execution Split
+                    if DRY_RUN:
+                        print(f" [DRY RUN] Would delete: {img_name}:{ui_version}")
+                        api_response_string = "[DRY RUN TEST] Deletion API call skipped successfully."
+                    else:
+                        try:
+                            print(f" -> Executing LIVE Deletion payload for {img_name}:{ui_version}...")
+                            response = requests.post(
+                                ARTIFACTORY_API_URL, 
+                                json=payload, 
+                                headers={"Content-Type": "application/json"},
+                                timeout=15
+                            )
+                            api_response_string = f"Status: {response.status_code} | Body: {response.text.strip()}"
+                        except Exception as api_err:
+                            api_response_string = f"Failed to call API: {str(api_err)}"
+                else:
+                    api_response_string = "SKIPPED: Artifact version mismatch or not found in response.json metadata reference definitions."
+
             final_report_rows.append([
                 img_name,
                 ui_version,
                 lifecycle,
                 live_version_value,
                 action_value,
+                api_payload_string,
+                api_response_string,
                 full_path
             ])
                 
-        # 3. Save downstream report output 
+        # Write Output CSV Log Asset
         with open(CONSOLIDATED_REPORT, mode="w", encoding="utf-8", newline="") as out_file:
             writer = csv.writer(out_file)
-            writer.writerow(["image_name", "scraped_version", "lifecycle_status", "live_version", "action", "full_path"])
+            writer.writerow([
+                "image_name", "scraped_version", "lifecycle_status", 
+                "live_version", "action", "api_payload_json", "api_response", "full_path"
+            ])
             writer.writerows(final_report_rows)
             
-        print(f"\nReconciliation report complete! Saved as: '{CONSOLIDATED_REPORT}'")
-        print("-" * 120)
-        print(f"{'IMAGE':<25} | {'UI VER':<12} | {'LIFECYCLE STATUS':<25} | {'LIVE VER':<12} | {'ACTION'}")
-        print("-" * 120)
-        # Displaying a preview that showcases multi-version tracing explicitly (e.g., rclone)
-        for row in final_report_rows[:15]: 
-            print(f"{row[0]:<25} | {row[1]:<12} | {row[2]:<25} | {row[3]:<12} | {row[4]}")
-        print("-" * 120)
+        print(f"\nCompleted! Consolidated ledger generated successfully at: '{CONSOLIDATED_REPORT}'")
