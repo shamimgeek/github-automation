@@ -1,0 +1,13 @@
+kubectl get pods --all-namespaces -o go-template='{{range .items}}{{range .spec.containers}}{{.image}}{{"\n"}}{{end}}{{end}}' | \
+sort -u | \
+awk -F'[:/]' '
+NF>=2 {
+    full_path = $0;
+    version = $NF;
+    image_name = $(NF-1);
+    
+    # Simple check if the path looks like a standard image format
+    if (full_path != "") {
+        print image_name "," version "," full_path;
+    }
+}' > live_gke_images_dump.txt
