@@ -7,7 +7,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # Setup Configuration
-TARGET_URL = "https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts" 
+TARGET_URL = "" 
 
 def scrape_entire_table_data(url):
     options = webdriver.EdgeOptions()
