@@ -14,12 +14,17 @@ from selenium.webdriver.support import expected_conditions as EC
 # ==========================================
 DRY_RUN = True  # Set to False to fire live deletion API requests!
 
+# Authentication Credentials for Artifactory Endpoints
+ARTIFACTORY_USER = "YOUR_USERNAME"
+ARTIFACTORY_PASSWORD = "YOUR_PASSWORD"
+
 TARGET_URL = "https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts"
 LIVE_IMAGES_FILE = "live_gke_images_PRD_20260618_074837.txt"
 RESPONSE_JSON_FILE = "response.json"  
 CONSOLIDATED_REPORT = "consolidated_artifactory_report.csv"
 
-ARTIFACTORY_API_URL = "https://artifactory.intranet.db.com/artifactory/api/plugins/execute/getallbynar?params=narId=155780-1"
+# Updated POST URL Configuration
+ARTIFACTORY_API_URL = "https://artifactory.sdlc.ctl.gcp.db.com/artifactory/api/plugins/execute/changeset"
 
 def load_live_gke_images(file_path):
     live_map = {}
@@ -30,7 +35,6 @@ def load_live_gke_images(file_path):
         reader = csv.reader(f)
         for row in reader:
             if len(row) >= 2:
-                # Lowercase names and versions to avoid mismatch
                 img_name = row[0].strip().lower()
                 version = row[1].strip().lower()
                 live_map.setdefault(img_name, set()).add(version)
@@ -49,15 +53,15 @@ def load_reference_response_metadata(file_path):
     try:
         with open(file_path, mode="r", encoding="utf-8") as f:
             data = json.load(f)
-            binary_report_list = data.get("binaryReport", []) #
+            binary_report_list = data.get("binaryReport", [])  #
             print(f"Loaded schema reference. Found {len(binary_report_list)} items inside 'binaryReport'.")
             
-            for item in binary_report_list: #
-                art_name = item.get("artifact", "").strip().lower()  # Forced lowercase normalization
-                art_ver = item.get("version", "").strip().lower()    # Forced lowercase normalization
-                binary_path = item.get("binaryPath", "").strip() #
-                change_name = item.get("changeName", "UNKNOWN_RELEASE") #
-                snow_ticket = item.get("serviceNowTicketId") #
+            for item in binary_report_list:  #
+                art_name = item.get("artifact", "").strip().lower()
+                art_ver = item.get("version", "").strip().lower()
+                binary_path = item.get("binaryPath", "").strip()  #
+                change_name = item.get("changeName", "UNKNOWN_RELEASE")  #
+                snow_ticket = item.get("serviceNowTicketId")  #
                 
                 if snow_ticket is None:
                     snow_ticket = "N/A"
@@ -69,7 +73,7 @@ def load_reference_response_metadata(file_path):
                         "changeName": change_name,
                         "serviceNowTicketId": snow_ticket,
                         "binaryPath": binary_path,
-                        "original_artifact": item.get("artifact", "").strip(), # Maintain casing for payload
+                        "original_artifact": item.get("artifact", "").strip(),
                         "original_version": item.get("version", "").strip()
                     }
     except Exception as e:
@@ -154,7 +158,6 @@ if __name__ == "__main__":
             lifecycle = entry["lifecycle_status"] 
             full_path = entry["full_path"]
             
-            # Normalize for matching comparisons
             img_name_lower = img_name.lower()
             ui_version_lower = ui_version.lower()
             
@@ -173,7 +176,6 @@ if __name__ == "__main__":
             else:
                 action_value = "deleted"
                 
-                # Use normalized lowercase keys for lookups
                 match_key = (img_name_lower, ui_version_lower)
                 if reference_tickets and match_key in reference_tickets:
                     ref_data = reference_tickets[match_key]
@@ -181,14 +183,15 @@ if __name__ == "__main__":
                     change_name_value = ref_data["changeName"]
                     snow_ticket_value = ref_data["serviceNowTicketId"]
                     
+                    # Target Payload Body Map Structure
                     payload = {
                         "nar": "155780-1",
                         "changeName": change_name_value,
                         "serviceNowTicketId": snow_ticket_value,
                         "binaryRemoveList": [
                             {
-                                "artifact": ref_data["original_artifact"], # Use correct original casing for api
-                                "version": ref_data["original_version"],   # Use correct original casing for api
+                                "artifact": ref_data["original_artifact"],
+                                "version": ref_data["original_version"],
                                 "binaryPath": ref_data["binaryPath"]
                             }
                         ]
@@ -196,13 +199,15 @@ if __name__ == "__main__":
                     api_payload_string = json.dumps(payload)
                     
                     if DRY_RUN:
-                        api_response_string = f"[DRY RUN ACTIVE] Would execute POST API call for {img_name}:{ui_version}."
+                        api_response_string = f"[DRY RUN ACTIVE] Would execute authenticated POST call to {ARTIFACTORY_API_URL} for {img_name}:{ui_version}."
                     else:
                         try:
+                            # Executing POST call with explicit Basic Authentication setup
                             response = requests.post(
                                 ARTIFACTORY_API_URL, 
                                 json=payload, 
                                 headers={"Content-Type": "application/json"},
+                                auth=(ARTIFACTORY_USER, ARTIFACTORY_PASSWORD),
                                 timeout=15
                             )
                             api_response_string = f"Status: {response.status_code} | Response: {response.text.strip()}"
@@ -224,7 +229,7 @@ if __name__ == "__main__":
                 full_path
             ])
                 
-        # Write Out the Clean Consolidated Report
+        # Write Out Final Compiled Spreadsheet
         with open(CONSOLIDATED_REPORT, mode="w", encoding="utf-8", newline="") as out_file:
             writer = csv.writer(out_file)
             writer.writerow([
@@ -234,4 +239,4 @@ if __name__ == "__main__":
             ])
             writer.writerows(final_report_rows)
             
-        print(f"\nReconciliation phase finished! File report compiled successfully at: '{CONSOLIDATED_REPORT}'")
+        print(f"\nReconciliation phase finished! Authenticated report compiled successfully at: '{CONSOLIDATED_REPORT}'")
