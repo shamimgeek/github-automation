@@ -1,13 +1,19 @@
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+OUTPUT_FILE="live_gke_images_${TIMESTAMP}.txt"
+
+echo "Extracting live images from GKE cluster into ${OUTPUT_FILE}..."
+
 kubectl get pods --all-namespaces -o go-template='{{range .items}}{{range .spec.containers}}{{.image}}{{"\n"}}{{end}}{{end}}' | \
 sort -u | \
-awk -F'[:/]' '
+awk -F'[:/]' -v out_file="$OUTPUT_FILE" '
 NF>=2 {
     full_path = $0;
     version = $NF;
     image_name = $(NF-1);
     
-    # Simple check if the path looks like a standard image format
     if (full_path != "") {
-        print image_name "," version "," full_path;
+        print image_name "," version "," full_path > out_file;
     }
-}' > live_gke_images_dump.txt
+}'
+
+echo "Done! Generated file: ${OUTPUT_FILE}"
