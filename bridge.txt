@@ -30,13 +30,16 @@ def load_live_gke_images(file_path):
         reader = csv.reader(f)
         for row in reader:
             if len(row) >= 2:
-                live_map.setdefault(row[0].strip(), set()).add(row[1].strip())
+                # Lowercase names and versions to avoid mismatch
+                img_name = row[0].strip().lower()
+                version = row[1].strip().lower()
+                live_map.setdefault(img_name, set()).add(version)
     return live_map
 
 def load_reference_response_metadata(file_path):
     """
-    Parses response.json schema:
-    Maps (artifact, version) -> {changeName, serviceNowTicketId, binaryPath}
+    Parses response.json schema.
+    Maps lowercased (artifact, version) -> metadata payload details.
     """
     metadata_lookup = {}
     if not os.path.exists(file_path):
@@ -46,15 +49,15 @@ def load_reference_response_metadata(file_path):
     try:
         with open(file_path, mode="r", encoding="utf-8") as f:
             data = json.load(f)
-            binary_report_list = data.get("binaryReport", [])
+            binary_report_list = data.get("binaryReport", []) #
             print(f"Loaded schema reference. Found {len(binary_report_list)} items inside 'binaryReport'.")
             
-            for item in binary_report_list:
-                art_name = item.get("artifact", "").strip()
-                art_ver = item.get("version", "").strip()
-                binary_path = item.get("binaryPath", "").strip()
-                change_name = item.get("changeName", "UNKNOWN_RELEASE")
-                snow_ticket = item.get("serviceNowTicketId")
+            for item in binary_report_list: #
+                art_name = item.get("artifact", "").strip().lower()  # Forced lowercase normalization
+                art_ver = item.get("version", "").strip().lower()    # Forced lowercase normalization
+                binary_path = item.get("binaryPath", "").strip() #
+                change_name = item.get("changeName", "UNKNOWN_RELEASE") #
+                snow_ticket = item.get("serviceNowTicketId") #
                 
                 if snow_ticket is None:
                     snow_ticket = "N/A"
@@ -65,7 +68,9 @@ def load_reference_response_metadata(file_path):
                     metadata_lookup[(art_name, art_ver)] = {
                         "changeName": change_name,
                         "serviceNowTicketId": snow_ticket,
-                        "binaryPath": binary_path
+                        "binaryPath": binary_path,
+                        "original_artifact": item.get("artifact", "").strip(), # Maintain casing for payload
+                        "original_version": item.get("version", "").strip()
                     }
     except Exception as e:
         print(f"Error parsing response.json file schema: {e}")
@@ -149,7 +154,11 @@ if __name__ == "__main__":
             lifecycle = entry["lifecycle_status"] 
             full_path = entry["full_path"]
             
-            is_version_live = (img_name in live_gke_inventory and ui_version in live_gke_inventory[img_name])
+            # Normalize for matching comparisons
+            img_name_lower = img_name.lower()
+            ui_version_lower = ui_version.lower()
+            
+            is_version_live = (img_name_lower in live_gke_inventory and ui_version_lower in live_gke_inventory[img_name_lower])
             
             live_version_value = "N/A"
             action_value = ""
@@ -164,12 +173,11 @@ if __name__ == "__main__":
             else:
                 action_value = "deleted"
                 
-                # Look up mapping parameters against artifact + version keys
-                match_key = (img_name, ui_version)
+                # Use normalized lowercase keys for lookups
+                match_key = (img_name_lower, ui_version_lower)
                 if reference_tickets and match_key in reference_tickets:
                     ref_data = reference_tickets[match_key]
                     
-                    # Pull values out to distinct dedicated column tracks
                     change_name_value = ref_data["changeName"]
                     snow_ticket_value = ref_data["serviceNowTicketId"]
                     
@@ -179,8 +187,8 @@ if __name__ == "__main__":
                         "serviceNowTicketId": snow_ticket_value,
                         "binaryRemoveList": [
                             {
-                                "artifact": img_name,
-                                "version": ui_version,
+                                "artifact": ref_data["original_artifact"], # Use correct original casing for api
+                                "version": ref_data["original_version"],   # Use correct original casing for api
                                 "binaryPath": ref_data["binaryPath"]
                             }
                         ]
@@ -216,7 +224,7 @@ if __name__ == "__main__":
                 full_path
             ])
                 
-        # Write Out the Clean Consolidated Report with New Requested Fields Included
+        # Write Out the Clean Consolidated Report
         with open(CONSOLIDATED_REPORT, mode="w", encoding="utf-8", newline="") as out_file:
             writer = csv.writer(out_file)
             writer.writerow([
