@@ -2,29 +2,61 @@ import time
 import csv
 import os
 import json
+import re
+import getpass
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# ==========================================
-#              CONFIGURATION
-# ==========================================
+# ==============================================================================
+#                                CONFIGURATION
+# ==============================================================================
 DRY_RUN = True  # Set to False to fire live deletion API requests!
 
-# Authentication Credentials for Artifactory Endpoints
-ARTIFACTORY_USER = "YOUR_USERNAME"
-ARTIFACTORY_PASSWORD = "YOUR_PASSWORD"
+# Secure Masked Credentials Configuration Layer
+ARTIFACTORY_USER = os.getenv("ARTIFACTORY_USER") or input("Enter Artifactory Username: ")
+ARTIFACTORY_PASSWORD = os.getenv("ARTIFACTORY_PASSWORD") or getpass.getpass("Enter Artifactory Password: ")
 
 TARGET_URL = "https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts"
 LIVE_IMAGES_FILE = "live_gke_images_PRD_20260618_074837.txt"
 RESPONSE_JSON_FILE = "response.json"  
 CONSOLIDATED_REPORT = "consolidated_artifactory_report.csv"
 
-# Updated POST URL Configuration
+# Updated Target POST URL Endpoint
 ARTIFACTORY_API_URL = "https://artifactory.sdlc.ctl.gcp.db.com/artifactory/api/plugins/execute/changeset"
+
+# Metrics Tracking Counters
+summary_metrics = {
+    "total_scraped": 0,
+    "no_action": 0,
+    "skipped_non_prod": 0,
+    "deleted_success": 0,
+    "deleted_failed": 0,
+    "missing_reference": 0
+}
+
+def create_authenticated_session():
+    """
+    Initializes a persistent HTTP session with built-in connection pooling,
+    default credentials, and transient backoff retries.
+    """
+    session = requests.Session()
+    session.auth = (ARTIFACTORY_USER, ARTIFACTORY_PASSWORD) #
+    session.headers.update({"Content-Type": "application/json"})
+    
+    # Configure auto-retry limits for transient intranet blips
+    retries = Retry(
+        total=3, 
+        backoff_factor=1, 
+        status_forcelist=[502, 503, 504]
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+    return session
 
 def load_live_gke_images(file_path):
     live_map = {}
@@ -42,8 +74,7 @@ def load_live_gke_images(file_path):
 
 def load_reference_response_metadata(file_path):
     """
-    Parses response.json schema.
-    Maps lowercased (artifact, version) -> metadata payload details.
+    Parses response.json data safely using strict schema validation.
     """
     metadata_lookup = {}
     if not os.path.exists(file_path):
@@ -53,15 +84,15 @@ def load_reference_response_metadata(file_path):
     try:
         with open(file_path, mode="r", encoding="utf-8") as f:
             data = json.load(f)
-            binary_report_list = data.get("binaryReport", [])  #
+            binary_report_list = data.get("binaryReport", []) #
             print(f"Loaded schema reference. Found {len(binary_report_list)} items inside 'binaryReport'.")
             
-            for item in binary_report_list:  #
+            for item in binary_report_list: #
                 art_name = item.get("artifact", "").strip().lower()
                 art_ver = item.get("version", "").strip().lower()
-                binary_path = item.get("binaryPath", "").strip()  #
-                change_name = item.get("changeName", "UNKNOWN_RELEASE")  #
-                snow_ticket = item.get("serviceNowTicketId")  #
+                binary_path = item.get("binaryPath", "").strip() #
+                change_name = item.get("changeName", "UNKNOWN_RELEASE") #
+                snow_ticket = item.get("serviceNowTicketId") #
                 
                 if snow_ticket is None:
                     snow_ticket = "N/A"
@@ -79,6 +110,23 @@ def load_reference_response_metadata(file_path):
     except Exception as e:
         print(f"Error parsing response.json file schema: {e}")
     return metadata_lookup
+
+def parse_artifact_path_with_regex(full_path):
+    """
+    Robust fallback parsing using Regex to prevent structural IndexError shifts.
+    """
+    # Pattern looks for standard structure matching /.../image_name/version/manifest.json
+    match = re.search(r"([^/]+)/([^/]+)/manifest\.json$", full_path)
+    if match:
+        return match.group(1), match.group(2)
+    
+    # Fallback backup strategy in case layout differs slightly
+    if "manifest.json" in full_path:
+        parts = full_path.split('/')
+        if len(parts) >= 3:
+            return parts[-3], parts[-2]
+            
+    return "N/A", "N/A"
 
 def scrape_entire_table_data(url):
     options = webdriver.EdgeOptions()
@@ -118,13 +166,8 @@ def scrape_entire_table_data(url):
             if row_data and len(row_data) >= 6:
                 full_path = row_data[0]
                 lifecycle_status = row_data[4].strip()
-                image_name, version = "N/A", "N/A"
                 
-                if "manifest.json" in full_path:
-                    parts = full_path.split('/')
-                    if len(parts) >= 3:
-                        version = parts[-2]
-                        image_name = parts[-3]
+                image_name, version = parse_artifact_path_with_regex(full_path)
                 
                 all_scraped_rows.append({
                     "image_name": image_name,
@@ -138,7 +181,7 @@ def scrape_entire_table_data(url):
         driver.quit()
     return all_scraped_rows
 
-# --- Execution Pipeline ---
+# --- Processing Pipeline Execution ---
 if __name__ == "__main__":
     print("-" * 60)
     print(f"EXECUTION MODE: {'[DRY RUN - TESTING]' if DRY_RUN else '[LIVE DELETION RUN]'}")
@@ -150,7 +193,11 @@ if __name__ == "__main__":
     
     if scraped_entries:
         print(f"\nEvaluating reconciliation matrices across {len(scraped_entries)} components...")
+        summary_metrics["total_scraped"] = len(scraped_entries)
         final_report_rows = []
+        
+        # Instantiate single persistent connection pool session
+        http_session = create_authenticated_session()
         
         for entry in scraped_entries:
             img_name = entry["image_name"]
@@ -172,10 +219,14 @@ if __name__ == "__main__":
             
             if is_version_live:
                 live_version_value = ui_version
-                action_value = "no action" if lifecycle == "PROD_LIVE" else "skip"
+                if lifecycle == "PROD_LIVE":
+                    action_value = "no action"
+                    summary_metrics["no_action"] += 1
+                else:
+                    action_value = "skip"
+                    summary_metrics["skipped_non_prod"] += 1
             else:
-                action_value = "deleted"
-                
+                # Missing from GKE, lookup corresponding reference data tracking properties
                 match_key = (img_name_lower, ui_version_lower)
                 if reference_tickets and match_key in reference_tickets:
                     ref_data = reference_tickets[match_key]
@@ -183,7 +234,7 @@ if __name__ == "__main__":
                     change_name_value = ref_data["changeName"]
                     snow_ticket_value = ref_data["serviceNowTicketId"]
                     
-                    # Target Payload Body Map Structure
+                    # Core target request structure configuration
                     payload = {
                         "nar": "155780-1",
                         "changeName": change_name_value,
@@ -199,22 +250,35 @@ if __name__ == "__main__":
                     api_payload_string = json.dumps(payload)
                     
                     if DRY_RUN:
-                        api_response_string = f"[DRY RUN ACTIVE] Would execute authenticated POST call to {ARTIFACTORY_API_URL} for {img_name}:{ui_version}."
+                        action_value = "deleted"
+                        api_response_string = f"[DRY RUN ACTIVE] Would execute POST call to changeset."
+                        summary_metrics["deleted_success"] += 1
                     else:
                         try:
-                            # Executing POST call with explicit Basic Authentication setup
-                            response = requests.post(
+                            # Run payload deployment post inside shared state session
+                            response = http_session.post(
                                 ARTIFACTORY_API_URL, 
                                 json=payload, 
-                                headers={"Content-Type": "application/json"},
-                                auth=(ARTIFACTORY_USER, ARTIFACTORY_PASSWORD),
                                 timeout=15
                             )
                             api_response_string = f"Status: {response.status_code} | Response: {response.text.strip()}"
+                            
+                            # Conditional logic evaluating API execution return value status code
+                            if response.status_code == 200 or response.status_code == 201:
+                                action_value = "deleted"
+                                summary_metrics["deleted_success"] += 1
+                            else:
+                                action_value = "deletion attempted but not successful"
+                                summary_metrics["deleted_failed"] += 1
+                                
                         except Exception as api_err:
+                            action_value = "deletion attempted but not successful"
                             api_response_string = f"API Request Failed: {str(api_err)}"
+                            summary_metrics["deleted_failed"] += 1
                 else:
+                    action_value = "skipped"
                     api_response_string = "SKIPPED: Artifact properties could not be identified inside reference binaryReport schema index."
+                    summary_metrics["missing_reference"] += 1
 
             final_report_rows.append([
                 img_name,
@@ -229,7 +293,10 @@ if __name__ == "__main__":
                 full_path
             ])
                 
-        # Write Out Final Compiled Spreadsheet
+        # Close connection session pool
+        http_session.close()
+
+        # Write Out Final CSV Report
         with open(CONSOLIDATED_REPORT, mode="w", encoding="utf-8", newline="") as out_file:
             writer = csv.writer(out_file)
             writer.writerow([
@@ -239,4 +306,17 @@ if __name__ == "__main__":
             ])
             writer.writerows(final_report_rows)
             
-        print(f"\nReconciliation phase finished! Authenticated report compiled successfully at: '{CONSOLIDATED_REPORT}'")
+        # ==============================================================================
+        #                            EXECUTION SUMMARY PRINT
+        # ==============================================================================
+        print("\n" + "="*60)
+        print("                   RECONCILIATION SUMMARY               ")
+        print("="*60)
+        print(f" Total Records Processed From UI Table : {summary_metrics['total_scraped']}")
+        print(f"  └ Active Images Kept (no action)     : {summary_metrics['no_action']}")
+        print(f"  └ Active Images Kept (skip)          : {summary_metrics['skipped_non_prod']}")
+        print(f"  └ Successfully Cleaned (deleted)     : {summary_metrics['deleted_success']}")
+        print(f"  └ Execution Failures (unsuccessful)  : {summary_metrics['deleted_failed']}")
+        print(f"  └ Unmatched response.json Records    : {summary_metrics['missing_reference']}")
+        print("="*60)
+        print(f"Consolidated ledger saved successfully at: '{CONSOLIDATED_REPORT}'\n")
