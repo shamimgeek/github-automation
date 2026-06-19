@@ -1,9 +1,12 @@
+import sys
+import os
 import time
 import csv
-import os
 import json
 import re
 import getpass
+import logging
+import argparse
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
@@ -13,24 +16,86 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+# Attempt to load an .env file if the python-dotenv package is installed locally
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # Gracefully ignore if dependency is missing; falls back to manual terminal prompt
+
 # ==============================================================================
-#                                CONFIGURATION
+#                            LOGGING & CLI SETUP
 # ==============================================================================
-DRY_RUN = True  # Set to False to fire live deletion API requests!
+def setup_logging():
+    """Configures structured concurrent logging to console and a persistent disk file."""
+    logger = logging.getLogger("ArtifactoryAutomation")
+    logger.setLevel(logging.INFO)
+    
+    log_format = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    
+    file_handler = logging.FileHandler("artifactory_automation.log", encoding="utf-8")
+    file_handler.setFormatter(log_format)
+    logger.addHandler(file_handler)
+    
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_format)
+    logger.addHandler(console_handler)
+    
+    return logger
 
-# Secure Masked Credentials Configuration Layer
-ARTIFACTORY_USER = os.getenv("ARTIFACTORY_USER") or input("Enter Artifactory Username: ")
-ARTIFACTORY_PASSWORD = os.getenv("ARTIFACTORY_PASSWORD") or getpass.getpass("Enter Artifactory Password: ")
+def parse_command_line_arguments():
+    """Configures terminal argparse flags replacing hardcoded config variables."""
+    parser = argparse.ArgumentParser(
+        description="Enterprise GKE Artifactory Reconciliation & Image Deletion Utility.\n\n"
+                    "CREDENTIAL SECURITY NOTE:\n"
+                    "To bypass manual password input prompts, you can set the environment variables "
+                    "'ARTIFACTORY_USER' and 'ARTIFACTORY_PASSWORD' or save them inside a local '.env' file. "
+                    "For best practices, pass an Artifactory API Key/Token instead of your real domain password.",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # Mode Flags
+    parser.add_argument(
+        "--live", 
+        action="store_true", 
+        help="Execute real authenticated deletion API requests against Artifactory. Default is Dry-Run mode."
+    )
+    parser.add_argument(
+        "--headless", 
+        action="store_true", 
+        help="Runs Selenium execution completely in the background without opening a visible browser GUI window."
+    )
+    
+    # Dynamically Configurable Arguments with Default Passbacks
+    parser.add_argument(
+        "--waltz-url",
+        default="https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts",
+        help="Target Waltz UI Artifacts composition URL to scrape."
+    )
+    parser.add_argument(
+        "--live-images-file",
+        default="live_gke_images_PRD_20260618_074837.txt",
+        help="Path to the source TXT ledger containing currently running inventory on GKE clusters."
+    )
+    parser.add_argument(
+        "--response-file",
+        default="response.json",
+        help="Path to the JSON metadata file reference dictionary."
+    )
+    parser.add_argument(
+        "--report-output",
+        default="consolidated_artifactory_report.csv",
+        help="Destination path layout name where compiled reconciliation spreadsheet saves."
+    )
+    
+    return parser.parse_args()
 
-TARGET_URL = "https://waltz.intranet.db.com/compositionviewer/155780-1/artifacts"
-LIVE_IMAGES_FILE = "live_gke_images_PRD_20260618_074837.txt"
-RESPONSE_JSON_FILE = "response.json"  
-CONSOLIDATED_REPORT = "consolidated_artifactory_report.csv"
+# Initialize Global Core Logger Module Reference Instance
+log = setup_logging()
 
-# Updated Target POST URL Endpoint
+# Target Change Request Endpoint Destination
 ARTIFACTORY_API_URL = "https://artifactory.sdlc.ctl.gcp.db.com/artifactory/api/plugins/execute/changeset"
 
-# Metrics Tracking Counters
 summary_metrics = {
     "total_scraped": 0,
     "no_action": 0,
@@ -40,102 +105,89 @@ summary_metrics = {
     "missing_reference": 0
 }
 
-def create_authenticated_session():
-    """
-    Initializes a persistent HTTP session with built-in connection pooling,
-    default credentials, and transient backoff retries.
-    """
+# ==============================================================================
+#                             CORE ENGINE LOOPS
+# ==============================================================================
+def create_authenticated_session(username, password):
+    """Initializes persistent basic auth transport sessions with standard retry adapters."""
     session = requests.Session()
-    session.auth = (ARTIFACTORY_USER, ARTIFACTORY_PASSWORD) #
+    session.auth = (username, password) #
     session.headers.update({"Content-Type": "application/json"})
     
-    # Configure auto-retry limits for transient intranet blips
-    retries = Retry(
-        total=3, 
-        backoff_factor=1, 
-        status_forcelist=[502, 503, 504]
-    )
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
     session.mount("https://", HTTPAdapter(max_retries=retries))
     return session
 
 def load_live_gke_images(file_path):
     live_map = {}
     if not os.path.exists(file_path):
-        print(f"Warning: Live image file '{file_path}' not found.")
+        log.warning(f"Live cluster file mapping target '{file_path}' not located. Treating everything as removed.")
         return live_map
     with open(file_path, mode="r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for row in reader:
             if len(row) >= 2:
-                img_name = row[0].strip().lower()
-                version = row[1].strip().lower()
-                live_map.setdefault(img_name, set()).add(version)
+                live_map.setdefault(row[0].strip().lower(), set()).add(row[1].strip().lower())
     return live_map
 
 def load_reference_response_metadata(file_path):
-    """
-    Parses response.json data safely using strict schema validation.
-    """
+    """Parses reference metadata definitions inside binaryReport array block."""
     metadata_lookup = {}
-    if not os.path.exists(file_path):
-        print(f"Warning: Ticket reference file '{file_path}' not found.")
-        return None
-    
-    try:
-        with open(file_path, mode="r", encoding="utf-8") as f:
-            data = json.load(f)
-            binary_report_list = data.get("binaryReport", []) #
-            print(f"Loaded schema reference. Found {len(binary_report_list)} items inside 'binaryReport'.")
+    with open(file_path, mode="r", encoding="utf-8") as f:
+        data = json.load(f)
+        binary_report_list = data.get("binaryReport", []) #
+        log.info(f"Successfully loaded mapping file reference registry. Found {len(binary_report_list)} items inside 'binaryReport'.")
+        
+        for item in binary_report_list: #
+            art_name = item.get("artifact", "").strip().lower()
+            art_ver = item.get("version", "").strip().lower()
+            binary_path = item.get("binaryPath", "").strip() #
+            change_name = item.get("changeName", "UNKNOWN_RELEASE") #
+            snow_ticket = item.get("serviceNowTicketId") #
             
-            for item in binary_report_list: #
-                art_name = item.get("artifact", "").strip().lower()
-                art_ver = item.get("version", "").strip().lower()
-                binary_path = item.get("binaryPath", "").strip() #
-                change_name = item.get("changeName", "UNKNOWN_RELEASE") #
-                snow_ticket = item.get("serviceNowTicketId") #
-                
-                if snow_ticket is None:
-                    snow_ticket = "N/A"
-                else:
-                    snow_ticket = str(snow_ticket).strip()
-                
-                if art_name and art_ver:
-                    metadata_lookup[(art_name, art_ver)] = {
-                        "changeName": change_name,
-                        "serviceNowTicketId": snow_ticket,
-                        "binaryPath": binary_path,
-                        "original_artifact": item.get("artifact", "").strip(),
-                        "original_version": item.get("version", "").strip()
-                    }
-    except Exception as e:
-        print(f"Error parsing response.json file schema: {e}")
+            if snow_ticket is None:
+                snow_ticket = "N/A"
+            else:
+                snow_ticket = str(snow_ticket).strip()
+            
+            if art_name and art_ver:
+                metadata_lookup[(art_name, art_ver)] = {
+                    "changeName": change_name,
+                    "serviceNowTicketId": snow_ticket,
+                    "binaryPath": binary_path,
+                    "original_artifact": item.get("artifact", "").strip(),
+                    "original_version": item.get("version", "").strip()
+                }
     return metadata_lookup
 
 def parse_artifact_path_with_regex(full_path):
-    """
-    Robust fallback parsing using Regex to prevent structural IndexError shifts.
-    """
-    # Pattern looks for standard structure matching /.../image_name/version/manifest.json
+    """Robust parsing utilizing lookbehind boundaries preventing layout matrix array shifts."""
     match = re.search(r"([^/]+)/([^/]+)/manifest\.json$", full_path)
     if match:
         return match.group(1), match.group(2)
-    
-    # Fallback backup strategy in case layout differs slightly
     if "manifest.json" in full_path:
         parts = full_path.split('/')
         if len(parts) >= 3:
             return parts[-3], parts[-2]
-            
     return "N/A", "N/A"
 
-def scrape_entire_table_data(url):
+def scrape_entire_table_data(url, run_headless):
+    """Initializes Selenium driver instance, resolving grid expansions."""
     options = webdriver.EdgeOptions()
-    options.add_argument('--start-maximized')
+    
+    if run_headless:
+        log.info("Initializing Selenium driver execution inside background HEADLESS mode context.")
+        options.add_argument('--headless=new')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+    else:
+        options.add_argument('--start-maximized')
+        
     driver = webdriver.Edge(options=options)
     all_scraped_rows = []
 
     try:
-        print("Navigating to target page...")
+        log.info(f"Spawning browser session context navigating toward target dashboard url: {url}")
         driver.get(url)
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CLASS_NAME, "v-data-footer__select")))
         time.sleep(3) 
@@ -153,12 +205,14 @@ def scrape_entire_table_data(url):
             EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'menuable__content__active')]//*[text()='All' or normalize-space()='All']"))
         )
         driver.execute_script("arguments[0].click();", all_option)
+        log.info("Expansion configuration trigger submitted. Pausing to allow UI compilation...")
         time.sleep(7) 
 
         rows = driver.find_elements(By.XPATH, "//table//tbody//tr | //div[@role='rowgroup']//div[@role='row']")
         if not rows:
             rows = driver.find_elements(By.CSS_SELECTOR, "tr")
 
+        log.info(f"Target structures expanded. Beginning layout extractions on {len(rows)} elements.")
         for row in rows:
             cells = row.find_elements(By.XPATH, "./td | ./div[@role='cell']")
             row_data = [cell.text.strip().replace("\n", " ") for cell in cells if cell.text.strip()]
@@ -166,7 +220,6 @@ def scrape_entire_table_data(url):
             if row_data and len(row_data) >= 6:
                 full_path = row_data[0]
                 lifecycle_status = row_data[4].strip()
-                
                 image_name, version = parse_artifact_path_with_regex(full_path)
                 
                 all_scraped_rows.append({
@@ -176,28 +229,63 @@ def scrape_entire_table_data(url):
                     "lifecycle_status": lifecycle_status
                 })
     except Exception as e:
-        print(f"Error extracting UI grid matrix: {e}")
+        log.error(f"Failed to cleanly navigate or scrape target UI structures: {e}", exc_info=True)
     finally:
         driver.quit()
+        log.info("Selenium automated driver instance killed successfully.")
     return all_scraped_rows
 
-# --- Processing Pipeline Execution ---
+# ==============================================================================
+#                               MAIN ROUTINE
+# ==============================================================================
 if __name__ == "__main__":
-    print("-" * 60)
-    print(f"EXECUTION MODE: {'[DRY RUN - TESTING]' if DRY_RUN else '[LIVE DELETION RUN]'}")
-    print("-" * 60)
+    args = parse_command_line_arguments()
+    is_dry_run = not args.live
 
-    live_gke_inventory = load_live_gke_images(LIVE_IMAGES_FILE)
-    reference_tickets = load_reference_response_metadata(RESPONSE_JSON_FILE)
-    scraped_entries = scrape_entire_table_data(TARGET_URL)
+    log.info("=" * 60)
+    log.info(f" RUN MODE DETERMINED: {'[DRY RUN - SIMULATION]' if is_dry_run else '[LIVE DELETION EXECUTION]'}")
+    log.info(f" DISPLAY ENVIRONMENT : {'[HEADLESS BACKGROUND]' if args.headless else '[VISIBLE WINDOW GUI]'}")
+    log.info("=" * 60)
+
+    # Fail-Fast Mechanism verifying file target paths dynamically derived from CLI arguments
+    log.info("Executing Pre-flight file availability and parsing configuration checks...")
+    if not os.path.exists(args.response_file):
+        log.critical(f"Aborting execution: Mapping data file '{args.response_file}' does not exist.")
+        sys.exit(1)
+        
+    try:
+        reference_tickets = load_reference_response_metadata(args.response_file)
+    except json.JSONDecodeError as json_err:
+        log.critical(f"Aborting execution: File '{args.response_file}' contains dirty syntax errors: {json_err}")
+        sys.exit(1)
+
+    # Automatically checks local .env file variables or continuous integration system strings before falling back
+    log.info("Checking identity configuration layer constraints...")
+    ARTIFACTORY_USER = os.getenv("ARTIFACTORY_USER")
+    ARTIFACTORY_PASSWORD = os.getenv("ARTIFACTORY_PASSWORD")
+
+    if not ARTIFACTORY_USER:
+        ARTIFACTORY_USER = input("Enter Artifactory Username: ")
+    else:
+        log.info("Successfully sourced credential tokens for user via local environment configuration context.")
+
+    if not ARTIFACTORY_PASSWORD:
+        ARTIFACTORY_PASSWORD = getpass.getpass("Enter Artifactory Password/Token: ")
+
+    if not ARTIFACTORY_USER or not ARTIFACTORY_PASSWORD:
+        log.critical("Identity authorization token parameters cannot be evaluated as empty strings. Process terminated.")
+        sys.exit(1)
+
+    # Run processing layers using evaluated arguments parameters
+    live_gke_inventory = load_live_gke_images(args.live_images_file)
+    scraped_entries = scrape_entire_table_data(args.waltz_url, args.headless)
     
     if scraped_entries:
-        print(f"\nEvaluating reconciliation matrices across {len(scraped_entries)} components...")
+        log.info(f"Beginning downstream evaluations mapping rules against {len(scraped_entries)} captured elements...")
         summary_metrics["total_scraped"] = len(scraped_entries)
         final_report_rows = []
         
-        # Instantiate single persistent connection pool session
-        http_session = create_authenticated_session()
+        http_session = create_authenticated_session(ARTIFACTORY_USER, ARTIFACTORY_PASSWORD)
         
         for entry in scraped_entries:
             img_name = entry["image_name"]
@@ -226,7 +314,6 @@ if __name__ == "__main__":
                     action_value = "skip"
                     summary_metrics["skipped_non_prod"] += 1
             else:
-                # Missing from GKE, lookup corresponding reference data tracking properties
                 match_key = (img_name_lower, ui_version_lower)
                 if reference_tickets and match_key in reference_tickets:
                     ref_data = reference_tickets[match_key]
@@ -234,7 +321,6 @@ if __name__ == "__main__":
                     change_name_value = ref_data["changeName"]
                     snow_ticket_value = ref_data["serviceNowTicketId"]
                     
-                    # Core target request structure configuration
                     payload = {
                         "nar": "155780-1",
                         "changeName": change_name_value,
@@ -249,74 +335,60 @@ if __name__ == "__main__":
                     }
                     api_payload_string = json.dumps(payload)
                     
-                    if DRY_RUN:
+                    if is_dry_run:
                         action_value = "deleted"
-                        api_response_string = f"[DRY RUN ACTIVE] Would execute POST call to changeset."
+                        api_response_string = f"[SIMULATION ONLY] Skipped transmission to changeset endpoint."
                         summary_metrics["deleted_success"] += 1
                     else:
                         try:
-                            # Run payload deployment post inside shared state session
-                            response = http_session.post(
-                                ARTIFACTORY_API_URL, 
-                                json=payload, 
-                                timeout=15
-                            )
+                            log.info(f"Transmitting deletion request for artifact payload -> {img_name}:{ui_version}")
+                            response = http_session.post(ARTIFACTORY_API_URL, json=payload, timeout=15)
                             api_response_string = f"Status: {response.status_code} | Response: {response.text.strip()}"
                             
-                            # Conditional logic evaluating API execution return value status code
-                            if response.status_code == 200 or response.status_code == 201:
+                            if response.status_code in [200, 201]:
                                 action_value = "deleted"
                                 summary_metrics["deleted_success"] += 1
+                                log.info(f"Successful processing complete for image: {img_name}:{ui_version}")
                             else:
                                 action_value = "deletion attempted but not successful"
                                 summary_metrics["deleted_failed"] += 1
+                                log.warning(f"Deletion payload rejected from endpoint on image {img_name}:{ui_version}. Status code: {response.status_code}")
                                 
                         except Exception as api_err:
                             action_value = "deletion attempted but not successful"
                             api_response_string = f"API Request Failed: {str(api_err)}"
                             summary_metrics["deleted_failed"] += 1
+                            log.error(f"Network transport boundary fault occurring on image {img_name}:{ui_version}: {api_err}")
                 else:
                     action_value = "skipped"
                     api_response_string = "SKIPPED: Artifact properties could not be identified inside reference binaryReport schema index."
                     summary_metrics["missing_reference"] += 1
 
             final_report_rows.append([
-                img_name,
-                ui_version,
-                lifecycle,
-                live_version_value,
-                action_value,
-                change_name_value,
-                snow_ticket_value,
-                api_payload_string,
-                api_response_string,
-                full_path
+                img_name, ui_version, lifecycle, live_version_value, action_value,
+                change_name_value, snow_ticket_value, api_payload_string, api_response_string, full_path
             ])
                 
-        # Close connection session pool
         http_session.close()
 
-        # Write Out Final CSV Report
-        with open(CONSOLIDATED_REPORT, mode="w", encoding="utf-8", newline="") as out_file:
+        # Write execution report out to evaluated destination argument
+        with open(args.report_output, mode="w", encoding="utf-8", newline="") as out_file:
             writer = csv.writer(out_file)
             writer.writerow([
-                "image_name", "scraped_version", "lifecycle_status", 
-                "live_version", "action", "changeName", "serviceNowTicketId",
-                "api_payload_json", "api_response", "full_path"
+                "image_name", "scraped_version", "lifecycle_status", "live_version", "action", 
+                "changeName", "serviceNowTicketId", "api_payload_json", "api_response", "full_path"
             ])
             writer.writerows(final_report_rows)
             
-        # ==============================================================================
-        #                            EXECUTION SUMMARY PRINT
-        # ==============================================================================
-        print("\n" + "="*60)
-        print("                   RECONCILIATION SUMMARY               ")
-        print("="*60)
-        print(f" Total Records Processed From UI Table : {summary_metrics['total_scraped']}")
-        print(f"  └ Active Images Kept (no action)     : {summary_metrics['no_action']}")
-        print(f"  └ Active Images Kept (skip)          : {summary_metrics['skipped_non_prod']}")
-        print(f"  └ Successfully Cleaned (deleted)     : {summary_metrics['deleted_success']}")
-        print(f"  └ Execution Failures (unsuccessful)  : {summary_metrics['deleted_failed']}")
-        print(f"  └ Unmatched response.json Records    : {summary_metrics['missing_reference']}")
-        print("="*60)
-        print(f"Consolidated ledger saved successfully at: '{CONSOLIDATED_REPORT}'\n")
+        log.info("="*60)
+        log.info("                   RECONCILIATION SUMMARY               ")
+        log.info("="*60)
+        log.info(f" Total Records Processed From UI Table : {summary_metrics['total_scraped']}")
+        log.info(f"  └ Active Images Kept (no action)     : {summary_metrics['no_action']}")
+        log.info(f"  └ Active Images Kept (skip)          : {summary_metrics['skipped_non_prod']}")
+        log.info(f"  └ Successfully Cleaned (deleted)     : {summary_metrics['deleted_success']}")
+        log.info(f"  └ Execution Failures (unsuccessful)  : {summary_metrics['deleted_failed']}")
+        log.info(f"  └ Unmatched response.json Records    : {summary_metrics['missing_reference']}")
+        log.info("="*60)
+        log.info(f"Consolidated ledger saved successfully at: '{args.report_output}'")
+        log.info("Execution log details successfully written to 'artifactory_automation.log'\n")
